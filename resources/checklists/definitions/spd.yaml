@@ -1,0 +1,137 @@
+# resources/checklists/definitions/spd.yaml
+
+schema_version: 1
+code: SPD
+title: СПД
+description: Станция повышения давления / насосная станция водоснабжения.
+source_workbook: Чек-лист СПД.xlsx
+expected_question_count: 25
+sheets:
+- id: main
+  title: 3. СПД
+  sections:
+  - id: main-section-1
+    title: Сведения о Заказчике
+    questions:
+    - id: main-1
+      source_number: '1'
+      text: Какая организация указана ?
+      output_order: 1
+      label: 'Организация:'
+    - id: main-2
+      source_number: '2'
+      text: Какой юридический или почтовый адрес организации указан?
+      output_order: 2
+      label: 'Адрес:'
+    - id: main-3
+      source_number: '3'
+      text: Какой ИНН организации указан ?
+      output_order: 3
+      label: 'ИНН:'
+    - id: main-4
+      source_number: '4'
+      text: Какой контактный номер телефона указан?
+      output_order: 4
+      label: 'Телефон:'
+    - id: main-5
+      source_number: '5'
+      text: Какой адрес электронной почты для связи указан?
+      output_order: 5
+      label: 'E-mail:'
+    - id: main-6
+      source_number: '6'
+      text: Какое наименование проектируемого объекта указано?
+      output_order: 6
+      label: 'Наименование объекта:'
+    - id: main-7
+      source_number: '7'
+      text: Какой точный адрес местонахождения объекта указан?
+      output_order: 7
+      label: 'Адрес объекта:'
+  - id: main-section-2
+    title: Сведения об объекте назначения
+    questions:
+    - id: main-8
+      source_number: '8'
+      text: Какое начальное давление на вводе в насосную станцию (Pвх) указано (в МПа или бар)?
+      output_order: 8
+    - id: main-9
+      source_number: '9'
+      text: Какое конечное давление на выходе из насосной станции (Pвых) указано (в МПа или бар)?
+      output_order: 9
+  - id: main-section-3
+    title: Рабочая точка станции повышения давления
+    questions:
+    - id: main-10
+      source_number: '10'
+      text: Какой максимальный расчетный расход ХВС (ГВС) G указан (в м³/ч)?
+      output_order: 10
+    - id: main-11
+      source_number: '11'
+      text: Какой минимальный расчетный расход ХВС (ГВС) G указан (в м³/ч)?
+      output_order: 11
+    - id: main-12
+      source_number: '12'
+      text: Какое рабочее давление СПД (Pmax) указано (в МПа или бар)?
+      output_order: 12
+  - id: main-section-4
+    title: 'Опции: Тип насосного оборудования и количество'
+    questions:
+    - id: main-13
+      source_number: '13'
+      text: Какой тип насосного оборудования указан (КН — горизонтальные многоступенчатые или ВН — вертикальные многоступенчатые
+        центробежные)?
+      output_order: 13
+    - id: main-14
+      source_number: '14'
+      text: Какой вариант управления установкой указан (местное или дистанционное)?
+      output_order: 14
+    - id: main-15
+      source_number: '15'
+      text: Какой способ пуска насосов указан (устройство плавного пуска или прямой пуск от сети)?
+      output_order: 15
+    - id: main-16
+      source_number: '16'
+      text: Какое количество рабочих насосов указано (от 1 до 5)?
+      output_order: 16
+    - id: main-17
+      source_number: '17'
+      text: Какое количество резервных насосов указано (от 1 до 3)?
+      output_order: 17
+    - id: main-18
+      source_number: '18'
+      text: Какой материал проточной части насосов указан (чугун или нержавеющая сталь)?
+      output_order: 18
+    - id: main-19
+      source_number: '19'
+      text: Какие диаметры вводных и напорных коллекторов указаны (если определены и изменение не допускается)?
+      output_order: 19
+    - id: main-20
+      source_number: '20'
+      text: Какой материал трубопроводов в границах поставки насосной станции указан (сталь 20, 09Г2С или нержавеющая сталь)?
+      output_order: 20
+  - id: main-section-5
+    title: 'Опции: Управление и автоматика'
+    questions:
+    - id: main-21
+      source_number: '21'
+      text: Какой вариант управления насосами указан (один общий ЧРП или отдельные ЧРП на каждый насос)?
+      output_order: 21
+    - id: main-22
+      source_number: '22'
+      text: Какой канал диспетчеризации указан (GPRS/GSM, Ethernet, Modbus RS-485 или другой)?
+      output_order: 22
+    - id: main-23
+      source_number: '23'
+      text: Необходимость дистанционного управления указана (нет или да с указанием типа канала связи)?
+      output_order: 23
+    - id: main-24
+      source_number: '24'
+      text: Какое количество вводов электропитания указано (в штуках)?
+      output_order: 24
+    - id: main-25
+      source_number: '25'
+      text: Укажите, используется ли насосная станция для повышения давления на выходе из емкости? (Будут ли передаваться
+        сигналы уровня в шкаф для управления насосной станцей). Предусматривать ли защиту от "сухого хода" или защита будет
+        срабатывать благодаря датчикам уровня.
+      output_order: 25

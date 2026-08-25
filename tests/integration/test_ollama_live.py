@@ -1,47 +1,80 @@
 # tests/integration/test_ollama_live.py
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import Settings
 
 
+class OllamaModel(BaseModel):
+    """Минимальная тестовая модель элемента /api/tags."""
+
+    model_config = ConfigDict(
+        extra="ignore",
+    )
+
+    name: str
+
+
+class OllamaTags(BaseModel):
+    """Минимальная структура ответа Ollama /api/tags."""
+
+    model_config = ConfigDict(
+        extra="ignore",
+    )
+
+    models: list[OllamaModel] = Field(
+        default_factory=list,
+    )
+
+
 def test_shared_ollama_is_available() -> None:
+    """Shared Ollama должен быть доступен из application network."""
     settings = Settings()
 
     response = httpx.get(
-        f"{settings.ollama_base_url.rstrip('/')}/api/tags",
+        (
+            settings
+            .ollama_base_url
+            .rstrip("/")
+            + "/api/tags"
+        ),
         timeout=10.0,
     )
 
     assert response.status_code == 200
 
 
-def test_required_ollama_models_are_available() -> None:
+def test_configured_vlm_is_available() -> None:
+    """Проверяется только модель, реально необходимая на этапе 2."""
     settings = Settings()
 
     response = httpx.get(
-        f"{settings.ollama_base_url.rstrip('/')}/api/tags",
+        (
+            settings
+            .ollama_base_url
+            .rstrip("/")
+            + "/api/tags"
+        ),
         timeout=10.0,
     )
 
     response.raise_for_status()
 
-    payload = response.json()
+    tags = OllamaTags.model_validate(
+        response.json()
+    )
 
     available_models = {
-        model["name"]
-        for model in payload.get("models", [])
+        model.name
+        for model in tags.models
     }
 
-    required_models = {
-        settings.ollama_llm_model,
-        settings.ollama_vlm_model,
-        settings.ollama_embedding_model,
-    }
-
-    missing_models = required_models - available_models
-
-    assert not missing_models, (
-        "В shared Ollama отсутствуют модели: "
-        f"{sorted(missing_models)}"
+    assert (
+        settings.ollama_vlm_model
+        in available_models
+    ), (
+        "Configured VLM is missing in Ollama: "
+        f"{settings.ollama_vlm_model}"
     )
+    

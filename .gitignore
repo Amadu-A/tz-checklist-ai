@@ -21,3 +21,8 @@ data/
 dist/
 build/
 *.egg-info/
+
+# Реальные документы используются локально для acceptance tests
+# и никогда не должны попадать в Git.
+tests/fixtures/private/*
+!tests/fixtures/private/.gitkeep

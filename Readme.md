@@ -2,13 +2,11 @@
 
 # TZ Checklist AI
 
-`TZ Checklist AI` — backend-сервис на FastAPI для анализа PDF-файлов технического задания, автоматического выбора одного из фиксированных чек-листов и заполнения найденными в ТЗ ответами.
+`TZ Checklist AI` — FastAPI backend-сервис для анализа PDF ТЗ, автоматического выбора одного из пяти фиксированных чек-листов и последующего заполнения найденными в документе ответами.
 
-Сервис предназначен для интеграции с внешним интерфейсом, например 1С или Telegram-ботом. Собственного frontend у проекта нет.
+Сервис не содержит frontend и предназначен для интеграции с 1С / Telegram.
 
-## Что делает сервис
-
-Пользователь передаёт PDF ТЗ. Сервис определяет наиболее подходящий чек-лист из фиксированного набора:
+## Поддерживаемые чек-листы
 
 - УУТЭ;
 - ИТП;
@@ -16,202 +14,82 @@
 - СПД;
 - АУПТ.
 
-После подтверждения выбранного чек-листа сервис анализирует документ, ищет фактические ответы на вопросы и формирует PDF-отчёт в формате:
+Пользователь загружает PDF. Сервис предлагает чек-лист, пользователь подтверждает рекомендацию либо выбирает другой. После анализа формируется PDF:
 
 | № | Вопрос | Ответ |
 |---|---|---|
 
-Если достоверный ответ в ТЗ не найден, ячейка ответа остаётся пустой.
-
-LLM не должна дополнять документ собственными знаниями. Ответ формируется только на основании найденных в загруженном ТЗ данных.
+Если подтвержденного evidence нет, ответ остается пустым.
 
 ## Архитектурные принципы
 
-Проект строится с использованием:
+Проект использует SOLID, Dependency Injection, Ports & Adapters, Composition Root, Repository Pattern, Use Case Pattern и Strategy/Fallback Pattern.
 
-- SOLID;
-- Dependency Injection;
-- Ports & Adapters;
-- разделения domain/application/infrastructure/API;
-- project-specific worker;
-- shared Ollama;
-- shared RabbitMQ;
-- private project network и shared `ai-shared`.
+Pydantic v2 используется для:
+- Settings;
+- YAML-определений чек-листов;
+- доменных моделей;
+- VLM JSON;
+- результатов классификации;
+- health/readiness;
+- будущих retrieval/extraction DTO.
 
-На сервере используется одна NVIDIA GeForce RTX 3090 с 24 ГБ VRAM, поэтому GPU-задачи проекта сериализуются. Планируемая конкуренция GPU worker — `1`.
+## Модели
 
-Модели Ollama:
+На этапе 2 реально используется только одна generative/VLM-модель:
 
-- LLM: `qwen3.8:27b`;
-- VLM: `qwen3-vl:8b-instruct`;
-- embeddings: `qwen3-embedding:4b`.
+```dotenv
+OLLAMA_VLM_MODEL=qwen3-vl:8b-instruct
+```
 
-Для запросов проекта используется `OLLAMA_KEEP_ALIVE=1m`, чтобы модель после завершения работы могла быть выгружена из VRAM примерно через одну минуту.
+Модель настраивается через `.env` и может быть заменена без изменения application layer.
 
-## Бизнес-логика
+`qwen3-embedding:4b` зарезервирована для этапа 3 (semantic retrieval).
+
+`qwen3.8:27b` не является обязательной зависимостью проекта и сейчас не используется.
+
+## PDF: native text first
+
+Все страницы заранее в изображения не переводятся.
 
 ```mermaid
 flowchart TD
-    A[PDF ТЗ] --> B[Рендеринг страниц PDF]
-    B --> C[VLM-анализ страниц]
-    C --> D[Нормализованное содержимое документа]
-    D --> E[Классификация чек-листа]
-    E --> F[Предложенный чек-лист]
-    F --> G{Пользователь подтвердил?}
-    G -- Нет --> H[Выбор другого чек-листа]
-    H --> G
-    G -- Да --> I[Индекс документа]
-    I --> J[Поиск evidence для каждого вопроса]
-    J --> K[LLM extraction]
-    K --> L{Ответ подтверждён evidence?}
-    L -- Да --> M[Короткий фактический ответ]
-    L -- Нет --> N[Пустой ответ]
-    M --> O[PDF-отчёт]
-    N --> O
+    PDF[PDF] --> TEXT[PyMuPDF native text]
+    TEXT --> CLASS[ChecklistClassifier]
+    CLASS --> OK{Текста и confidence достаточно?}
+    OK -- Да --> RESULT[Рекомендация]
+    OK -- Нет --> RENDER[Render только нужных страниц]
+    RENDER --> VLM[Qwen3-VL]
+    VLM --> MERGE[Native text + visual evidence]
+    MERGE --> CLASS2[Повторная классификация]
+    CLASS2 --> RESULT
 ```
 
-## Процесс обработки
+VLM используется как targeted fallback:
+- скан / пустой текстовый слой;
+- слабый text layer;
+- низкая confidence;
+- в будущем — релевантный чертеж, схема или сложная таблица.
+
+## Будущий анализ вопросов
 
 ```mermaid
-flowchart LR
-    EXT[1С / Telegram] --> API[FastAPI]
-    API --> STORE[(Project data)]
-    API --> MQ[Shared RabbitMQ]
-    MQ --> WORKER[Project worker\nconcurrency=1]
-    WORKER --> PDF[PyMuPDF render]
-    PDF --> VLM[Shared Ollama\nQwen3-VL]
-    VLM --> EMB[Shared Ollama\nQwen3 Embedding]
+flowchart TD
+    PDF[PDF] --> NATIVE[Native text]
+    NATIVE --> CHUNKS[Chunks]
+    CHUNKS --> EMB[Embeddings]
     EMB --> RET[Hybrid retrieval]
-    RET --> LLM[Shared Ollama\nQwen3.8]
-    LLM --> REPORT[PDF renderer]
-    REPORT --> STORE
-    STORE --> API
-    API --> EXT
+    RET --> EVIDENCE{Текстового evidence достаточно?}
+    EVIDENCE -- Да --> EXTRACT[Answer extraction]
+    EVIDENCE -- Нет / visual --> PAGE[Render relevant page]
+    PAGE --> VLM[VLM]
+    VLM --> EXTRACT
+    EXTRACT --> ANSWER[Короткий ответ или пусто]
 ```
 
-OCR-движок в pipeline не используется. Страницы PDF рендерятся в изображения и анализируются VLM. Нативный текст PDF может использоваться как дополнительный источник контекста, но не заменяет VLM-анализ страниц.
+## GPU
 
-## API-сценарий
-
-Планируется один endpoint:
-
-```text
-POST /api/v1/tz-check
-```
-
-Операция определяется полем `action`.
-
-Поддерживаемые действия:
-
-```text
-select
-confirm
-status
-result
-```
-
-Логика взаимодействия:
-
-```mermaid
-sequenceDiagram
-    participant C as 1С / Telegram
-    participant A as FastAPI
-    participant W as Worker
-    participant O as Ollama
-
-    C->>A: action=select + PDF
-    A->>O: классификация документа
-    O-->>A: recommended_checklist
-    A-->>C: request_id + рекомендация
-
-    C->>A: action=confirm + checklist_code
-    A->>W: поставить анализ в очередь
-    A-->>C: processing
-
-    W->>O: VLM / embeddings / LLM
-    O-->>W: результаты
-    W->>W: сформировать PDF
-
-    C->>A: action=status
-    A-->>C: completed
-
-    C->>A: action=result
-    A-->>C: PDF
-```
-
-## Структура проекта
-
-```text
-tz-checklist-ai/
-├── app/
-│   ├── main.py
-│   ├── api/
-│   │   ├── dependencies.py
-│   │   └── v1/
-│   │       ├── router.py
-│   │       ├── schemas.py
-│   │       └── tz_check.py
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── logging.py
-│   │   └── container.py
-│   ├── domain/
-│   │   ├── entities.py
-│   │   ├── enums.py
-│   │   ├── models.py
-│   │   └── exceptions.py
-│   ├── application/
-│   │   ├── ports/
-│   │   ├── services/
-│   │   └── use_cases/
-│   ├── infrastructure/
-│   │   ├── ai/
-│   │   ├── pdf/
-│   │   ├── retrieval/
-│   │   ├── checklists/
-│   │   ├── reports/
-│   │   ├── persistence/
-│   │   └── queue/
-│   └── worker/
-├── resources/
-│   └── checklists/
-│       ├── catalog.yaml
-│       ├── manifest.yaml
-│       ├── definitions/
-│       └── source/
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── acceptance/
-│   └── fixtures/
-├── scripts/
-│   ├── test.sh
-│   ├── run.sh
-│   ├── stop.sh
-│   ├── validate_checklists.py
-│   └── smoke_test.py
-├── docs/
-├── Dockerfile
-├── compose.yaml
-├── pyproject.toml
-├── .env.example
-├── .gitignore
-├── .dockerignore
-└── README.md
-```
-
-## План разработки
-
-1. Базовый FastAPI-проект, конфигурация, DI, healthchecks, Docker, scripts и тестовая инфраструктура.
-2. Нормализация пяти чек-листов, VLM-разбор PDF и автоматический выбор чек-листа с подтверждением пользователя.
-3. Очередь GPU-задач, embeddings, retrieval, LLM-extraction, валидация ответов и формирование PDF.
-4. Единый endpoint, state machine, полные acceptance/E2E-тесты на пяти предоставленных парах ТЗ ↔ чек-лист и финальная документация.
-
-## GPU и VRAM
-
-На RTX 3090 одновременно не следует независимо запускать большие LLM/VLM-задачи.
-
-Для проекта используются настройки:
+На RTX 3090 24 GB задачи проекта выполняются последовательно:
 
 ```dotenv
 GPU_TASK_CONCURRENCY=1
@@ -219,21 +97,95 @@ VLM_PAGES_IN_FLIGHT=1
 OLLAMA_KEEP_ALIVE=1m
 ```
 
-Project-specific worker получает GPU-задачи через shared RabbitMQ и обрабатывает их последовательно.
+`keep_alive=1m` передается в каждый VLM-запрос проекта.
 
-Это ограничивает конкуренцию внутри `tz-checklist-ai`. Shared Ollama остаётся общей инфраструктурой, поэтому другие проекты также могут влиять на использование VRAM.
+## Чек-листы
 
-## Запуск
+Пять постоянных XLSX нормализованы в YAML:
 
-Первый запуск:
-
-```bash
-cp .env.example .env
-chmod +x scripts/*.sh
-./scripts/run.sh
+```text
+resources/checklists/
+├── catalog.yaml
+├── manifest.yaml
+└── definitions/
+    ├── uute.yaml
+    ├── itp.yaml
+    ├── mkbi.yaml
+    ├── spd.yaml
+    └── aupt.yaml
 ```
 
-Обычный запуск:
+Количество вопросов:
+- UUTE — 41;
+- ITP — 75;
+- MKBI — 82;
+- SPD — 25;
+- AUPT — 30.
+
+ИТП сохраняет два исходных sheet. Ошибки исходных XLSX не исправляются скрытно и фиксируются в manifest.
+
+## Структура
+
+```text
+tz-checklist-ai/
+├── app/
+│   ├── api/
+│   ├── core/
+│   ├── domain/
+│   ├── application/
+│   │   ├── ports/
+│   │   ├── services/
+│   │   └── use_cases/
+│   ├── infrastructure/
+│   │   ├── ai/
+│   │   ├── checklists/
+│   │   └── pdf/
+│   └── worker/
+├── resources/checklists/
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── acceptance/
+│   └── fixtures/private/
+├── scripts/
+├── Dockerfile
+├── compose.yaml
+├── pyproject.toml
+├── .env.example
+└── README.md
+```
+
+## План
+
+1. FastAPI, DI, healthchecks, Docker, scripts, базовые тесты.
+2. Пять чек-листов, native-text-first PDF analysis, targeted VLM fallback, выбор и подтверждение чек-листа.
+3. RabbitMQ/GPU queue, embeddings, hybrid retrieval, extraction, PDF-отчет.
+4. Один endpoint, state machine, E2E/acceptance и финальная документация.
+
+## Тестирование
+
+Все проверки:
+
+```bash
+./scripts/test.sh
+```
+
+Этап 2 автоматически проверяет:
+- Pydantic-валидацию чек-листов;
+- количества вопросов;
+- два sheet ИТП;
+- native text extraction;
+- targeted rendering;
+- отсутствие VLM при уверенной native-классификации;
+- VLM fallback при слабом text layer;
+- последовательные VLM-вызовы;
+- `keep_alive=1m`;
+- наличие configured VLM;
+- 5/5 классификацию реальных PDF.
+
+PDF из `tests/fixtures/private/` не коммитятся.
+
+## Запуск
 
 ```bash
 ./scripts/run.sh
@@ -244,59 +196,3 @@ chmod +x scripts/*.sh
 ```bash
 ./scripts/stop.sh
 ```
-
-## Тестирование
-
-Все тесты проекта запускаются одной командой:
-
-```bash
-./scripts/test.sh
-```
-
-Скрипт сам:
-
-- проверяет `docker compose config`;
-- собирает тестовый image;
-- запускает Ruff;
-- запускает весь pytest test suite.
-
-Ручная проверка отдельных функций не должна требоваться, если это можно выразить автоматическим тестом.
-
-## Проверка API
-
-После запуска:
-
-```bash
-curl -fsS http://localhost:8110/health/live
-curl -fsS http://localhost:8110/health/ready
-```
-
-## Shared infrastructure
-
-Приложение не создаёт собственные Ollama и RabbitMQ.
-
-Используются:
-
-```text
-Ollama:   http://ollama:11434
-RabbitMQ: rabbitmq:5672
-Network:  ai-shared
-```
-
-RabbitMQ должен использовать отдельные user и vhost проекта.
-
-## Git
-
-Основной production/private repository:
-
-```text
-neo-term-it/tz-checklist-ai
-```
-
-Контрольный repository:
-
-```text
-Amadu-A/tz-checklist-ai
-```
-
-Секреты, `.env`, токены и пароли в Git не коммитятся.

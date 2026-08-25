@@ -15,18 +15,21 @@ if [[ ! -f .env ]]; then
   echo "[tests] Created .env from .env.example"
 fi
 
+mkdir -p \
+  "${ROOT_DIR}/tests/fixtures/private"
+
 echo "[tests] Validate Docker Compose"
 docker compose config --quiet
 
 echo "[tests] Build test image"
 docker compose build api
 
-echo "[tests] Ruff"
-echo "[tests] Unit + integration tests"
+echo "[tests] Ruff + full pytest suite"
 
 docker compose run \
   --rm \
   --no-deps \
+  -v "${ROOT_DIR}/tests/fixtures/private:/test-data:ro" \
   api \
   sh -lc '
     ruff check app tests &&

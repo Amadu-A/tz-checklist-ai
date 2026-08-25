@@ -1,0 +1,30 @@
+# resources/checklists/manifest.yaml
+
+schema_version: 1
+sources:
+- code: UUTE
+  workbook: Чек-лист УУТЭ.xlsx
+  sha256: 4a72b62e0ac366b8841501c09ea5b61ef51f25278e8fcb912a97334df49d7972
+  expected_question_count: 41
+- code: ITP
+  workbook: Чек-лист ИТП.xlsx
+  sha256: cca6ac0c410bcc48aa558b6c27f5d17953f80d804362b2c66483533e10dddf80
+  expected_question_count: 75
+- code: MKBI
+  workbook: Чек-лист МКБИ.xlsx
+  sha256: ab74ae7c6c1f752c2ce055ca4d7b2f2d37e35db7a44daa11cb07186457a63444
+  expected_question_count: 82
+  known_source_issues:
+  - Вопрос №64 в исходном XLSX содержит поврежденный текст с фрагментами Excel-ссылок; нормализованная версия сохраняет его
+    без исправления.
+  - Нумерация вопросов в источнике пропускает №21 и №40.
+- code: SPD
+  workbook: Чек-лист СПД.xlsx
+  sha256: a6647e314962556530300b9d69b4972096b796cb2c89931e7ea50edfc7ad92fe
+  expected_question_count: 25
+- code: AUPT
+  workbook: Чек-лист АУПТ.xlsx
+  sha256: f4b70fab783cdf08dc3e9d074be3d482e5df316b214cdf3635540003c507f110
+  expected_question_count: 30
+  known_source_issues:
+  - Вопросы №11–14 и №15–18 содержат повторяющиеся формулировки в исходном XLSX; сохранены без исправления.

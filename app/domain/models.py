@@ -1,21 +1,32 @@
 # app/domain/models.py
 
-from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass(frozen=True, slots=True)
-class DependencyHealth:
-    """Состояние одной обязательной зависимости."""
+class HealthModel(BaseModel):
+    """Базовая неизменяемая Pydantic-модель health/readiness домена."""
 
-    name: str
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+    )
+
+
+class DependencyHealth(HealthModel):
+    """Состояние одной обязательной внешней зависимости."""
+
+    name: str = Field(min_length=1)
+
     ready: bool
+
     detail: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class ReadinessReport:
+class ReadinessReport(HealthModel):
     """Сводное состояние готовности приложения."""
 
     ready: bool
-    dependencies: tuple[DependencyHealth, ...]
-    
+
+    dependencies: tuple[DependencyHealth, ...] = Field(
+        default_factory=tuple,
+    )

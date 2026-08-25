@@ -1,16 +1,24 @@
 # tests/integration/test_health_api.py
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
 
-from app.api.dependencies import get_readiness_service
-from app.domain.models import DependencyHealth, ReadinessReport
+from app.api.dependencies import (
+    get_readiness_service,
+)
+from app.domain.models import (
+    DependencyHealth,
+    ReadinessReport,
+)
 from app.main import app
 
 
 class ReadyServiceStub:
     """Стаб готового readiness-сервиса."""
 
-    async def check(self) -> ReadinessReport:
+    async def check(
+        self,
+    ) -> ReadinessReport:
         return ReadinessReport(
             ready=True,
             dependencies=(
@@ -25,58 +33,102 @@ class ReadyServiceStub:
 class NotReadyServiceStub:
     """Стаб неготового readiness-сервиса."""
 
-    async def check(self) -> ReadinessReport:
+    async def check(
+        self,
+    ) -> ReadinessReport:
         return ReadinessReport(
             ready=False,
             dependencies=(
                 DependencyHealth(
                     name="ollama",
                     ready=False,
-                    detail="ConnectError",
+                    detail=(
+                        "ConnectError"
+                    ),
                 ),
             ),
         )
 
 
-def test_liveness_endpoint() -> None:
-    client = TestClient(app)
+async def _get(
+    path: str,
+) -> httpx.Response:
+    """Вызвать ASGI-приложение без deprecated TestClient."""
+    transport = (
+        httpx.ASGITransport(
+            app=app
+        )
+    )
 
-    response = client.get("/health/live")
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as client:
+        return await client.get(
+            path
+        )
 
-    assert response.status_code == 200
+
+@pytest.mark.asyncio
+async def test_liveness_endpoint() -> None:
+    response = await _get(
+        "/health/live"
+    )
+
+    assert (
+        response.status_code
+        == 200
+    )
+
     assert response.json() == {
         "status": "ok",
     }
 
 
-def test_readiness_endpoint_returns_200_when_ready() -> None:
+@pytest.mark.asyncio
+async def test_readiness_endpoint_returns_200_when_ready() -> None:
     app.dependency_overrides[
         get_readiness_service
     ] = lambda: ReadyServiceStub()
 
-    client = TestClient(app)
-
     try:
-        response = client.get("/health/ready")
+        response = await _get(
+            "/health/ready"
+        )
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "ready"
+    assert (
+        response.status_code
+        == 200
+    )
+
+    assert (
+        response.json()["status"]
+        == "ready"
+    )
 
 
-def test_readiness_endpoint_returns_503_when_not_ready() -> None:
+@pytest.mark.asyncio
+async def test_readiness_endpoint_returns_503_when_not_ready() -> None:
     app.dependency_overrides[
         get_readiness_service
     ] = lambda: NotReadyServiceStub()
 
-    client = TestClient(app)
-
     try:
-        response = client.get("/health/ready")
+        response = await _get(
+            "/health/ready"
+        )
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 503
-    assert response.json()["status"] == "not_ready"
+    assert (
+        response.status_code
+        == 503
+    )
+
+    assert (
+        response.json()["status"]
+        == "not_ready"
+    )
     

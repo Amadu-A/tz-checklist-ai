@@ -29,6 +29,7 @@ COPY app /app/app
 RUN pip install --upgrade pip \
     && pip install '.[dev]'
 
+COPY resources /app/resources
 COPY tests /app/tests
 COPY scripts /app/scripts
 

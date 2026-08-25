@@ -1,0 +1,88 @@
+# resources/checklists/catalog.yaml
+
+schema_version: 1
+checklists:
+- code: UUTE
+  title: УУТЭ
+  description: Узел учета тепловой энергии и теплоносителя.
+  classifier_hints:
+  - text: коммерческий узел учета тепловой энергии
+    weight: 12.0
+  - text: узел учета тепловой энергии
+    weight: 10.0
+  - text: уутэ
+    weight: 12.0
+  - text: тепловычислитель
+    weight: 5.0
+  - text: расходомер
+    weight: 3.0
+  - text: учет тепловой энергии и теплоносителя
+    weight: 8.0
+- code: ITP
+  title: ИТП
+  description: Индивидуальный тепловой пункт.
+  classifier_hints:
+  - text: индивидуальный тепловой пункт
+    weight: 12.0
+  - text: блочный индивидуальный тепловой пункт
+    weight: 14.0
+  - text: итп
+    weight: 10.0
+  - text: битп
+    weight: 10.0
+  - text: пластинчатый теплообменник
+    weight: 3.0
+  - text: узел подпитки
+    weight: 2.0
+- code: MKBI
+  title: МКБИ
+  description: Модульная или блочно-модульная котельная.
+  classifier_hints:
+  - text: блочно-модульная котельная
+    weight: 14.0
+  - text: модульная котельная
+    weight: 12.0
+  - text: котельная
+    weight: 6.0
+  - text: котел водогрейный
+    weight: 5.0
+  - text: пеллет
+    weight: 4.0
+  - text: дымоход
+    weight: 3.0
+- code: SPD
+  title: СПД
+  description: Станция повышения давления или насосная станция водоснабжения.
+  classifier_hints:
+  - text: станция повышения давления
+    weight: 14.0
+  - text: насосная станция второго подъема
+    weight: 12.0
+  - text: насосная станция 2-го подъема
+    weight: 12.0
+  - text: насосная станция
+    weight: 5.0
+  - text: водозаборный узел
+    weight: 5.0
+  - text: взу
+    weight: 5.0
+  - text: повышение давления
+    weight: 8.0
+- code: AUPT
+  title: АУПТ
+  description: Автоматическая установка пожаротушения или насосная установка пожаротушения.
+  classifier_hints:
+  - text: насосная установка пожаротушения
+    weight: 14.0
+  - text: установка пожаротушения
+    weight: 12.0
+  - text: аупт
+    weight: 12.0
+  - text: спринклер
+    weight: 6.0
+  - text: дренчер
+    weight: 6.0
+  - text: пожарный насос
+    weight: 6.0
+  - text: жокей-насос
+    weight: 5.0
