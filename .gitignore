@@ -1,0 +1,23 @@
+# .gitignore
+
+.env
+.env.*
+!.env.example
+
+.venv/
+__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.idea/
+.vscode/
+
+data/
+
+dist/
+build/
+*.egg-info/

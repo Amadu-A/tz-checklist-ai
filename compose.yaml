@@ -1,0 +1,44 @@
+# compose.yaml
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    env_file:
+      - .env
+
+    ports:
+      - "${API_BIND_IP:-0.0.0.0}:${API_HOST_PORT:-8110}:8000"
+
+    volumes:
+      - tz_checklist_data:/data
+
+    networks:
+      - app-net
+      - ai-shared
+
+    restart: unless-stopped
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fsS",
+          "http://localhost:8000/health/live"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  app-net:
+
+  ai-shared:
+    external: true
+
+volumes:
+  tz_checklist_data:
