@@ -27,7 +27,6 @@ from app.domain.enums import (
     VlmFallbackReason,
 )
 
-
 CATALOG = ChecklistCatalog(
     checklists=(
         ChecklistCatalogEntry(

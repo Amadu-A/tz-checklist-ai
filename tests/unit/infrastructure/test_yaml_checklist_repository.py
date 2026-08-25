@@ -7,7 +7,6 @@ from app.infrastructure.checklists.yaml_checklist_repository import (
     YamlChecklistRepository,
 )
 
-
 RESOURCES = (
     Path(__file__).parents[3]
     / "resources"

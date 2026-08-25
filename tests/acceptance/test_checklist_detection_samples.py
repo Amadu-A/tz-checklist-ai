@@ -7,8 +7,8 @@ import pytest
 from app.application.services.checklist_classifier import (
     ChecklistClassifier,
 )
-from app.application.services.document_vision_service import (
-    DocumentVisionService,
+from app.application.services.document_content_service import (
+    DocumentContentService,
 )
 from app.application.use_cases.select_checklist import (
     SelectChecklistUseCase,
@@ -21,10 +21,9 @@ from app.infrastructure.ai.ollama_vlm_client import (
 from app.infrastructure.checklists.yaml_checklist_repository import (
     YamlChecklistRepository,
 )
-from app.infrastructure.pdf.pymupdf_page_renderer import (
-    PyMuPdfPageRenderer,
+from app.infrastructure.pdf.pymupdf_document_adapter import (
+    PyMuPdfDocumentAdapter,
 )
-
 
 SAMPLES = {
     (
@@ -57,7 +56,7 @@ SAMPLES = {
 def _build_use_case(
     settings: Settings,
 ) -> SelectChecklistUseCase:
-    """Собрать acceptance-сценарий из настоящих production adapters."""
+    """Собрать реальный production pipeline для acceptance test."""
     repository = (
         YamlChecklistRepository(
             settings
@@ -65,8 +64,8 @@ def _build_use_case(
         )
     )
 
-    renderer = (
-        PyMuPdfPageRenderer(
+    pdf_adapter = (
+        PyMuPdfDocumentAdapter(
             dpi=(
                 settings
                 .pdf_render_dpi
@@ -99,37 +98,60 @@ def _build_use_case(
         )
     )
 
-    vision_service = (
-        DocumentVisionService(
-            renderer=renderer,
-            vlm_client=vlm_client,
-        )
-    )
-
-    classifier = (
-        ChecklistClassifier(
-            repository.get_catalog()
+    content_service = (
+        DocumentContentService(
+            text_extractor=(
+                pdf_adapter
+            ),
+            page_renderer=(
+                pdf_adapter
+            ),
+            vlm_client=(
+                vlm_client
+            ),
         )
     )
 
     return SelectChecklistUseCase(
-        vision_service=vision_service,
-        classifier=classifier,
+        content_service=(
+            content_service
+        ),
+        classifier=(
+            ChecklistClassifier(
+                repository
+                .get_catalog()
+            )
+        ),
         classification_max_pages=(
             settings
             .classification_max_pages
+        ),
+        min_native_chars=(
+            settings
+            .classification_min_native_chars
+        ),
+        min_confidence=(
+            settings
+            .classification_min_confidence
+        ),
+        min_page_chars=(
+            settings
+            .classification_min_page_chars
+        ),
+        vlm_fallback_max_pages=(
+            settings
+            .vlm_fallback_max_pages
         ),
     )
 
 
 def test_all_five_private_acceptance_fixtures_are_present() -> None:
-    """Не позволить закончить Stage 2 без пяти эталонных PDF."""
+    """Этап 2 нельзя завершить без всех пяти эталонных PDF."""
     settings = Settings()
 
     missing = [
         name
-        for name
-        in SAMPLES
+        for name in SAMPLES
         if not (
             settings.test_data_dir
             / name
@@ -151,11 +173,11 @@ def test_all_five_private_acceptance_fixtures_are_present() -> None:
     ),
     SAMPLES.items(),
 )
-async def test_vlm_selects_expected_checklist_for_real_sample(
+async def test_selects_expected_checklist_for_real_sample(
     filename: str,
     expected_code: ChecklistCode,
 ) -> None:
-    """Проверить полный PDF -> VLM -> classifier на реальном ТЗ."""
+    """Проверить native-first/VLM-fallback pipeline на реальном ТЗ."""
     settings = Settings()
 
     use_case = (
@@ -176,11 +198,17 @@ async def test_vlm_selects_expected_checklist_for_real_sample(
     )
 
     assert (
-        result.recommended_code
+        result
+        .suggestion
+        .recommended_code
         == expected_code
     ), (
         f"Для {filename} выбран "
-        f"{result.recommended_code}; "
+        f"{result.suggestion.recommended_code}; "
         f"ожидался {expected_code}. "
-        f"Ranking={result.ranking}"
+        f"source={result.source}; "
+        f"fallback={result.fallback_reason}; "
+        f"vision_pages={result.vision_pages}; "
+        f"ranking={result.suggestion.ranking}"
     )
+    
