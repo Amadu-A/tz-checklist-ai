@@ -10,7 +10,18 @@ ROOT_DIR="$(
 
 cd "${ROOT_DIR}"
 
-if [[ ! -f .env ]]; then
+# .env.example является обязательным шаблоном конфигурации.
+# Пустой шаблон означает ошибку структуры проекта, поэтому
+# продолжать тестирование в таком состоянии нельзя.
+if [[ ! -s .env.example ]]; then
+  echo "[tests] ERROR: .env.example is missing or empty"
+  exit 1
+fi
+
+# -s проверяет одновременно существование файла и его размер.
+# Поэтому новый проект и случайно созданный пустой .env
+# автоматически получают рабочую dev-конфигурацию.
+if [[ ! -s .env ]]; then
   cp .env.example .env
   echo "[tests] Created .env from .env.example"
 fi

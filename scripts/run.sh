@@ -10,7 +10,12 @@ ROOT_DIR="$(
 
 cd "${ROOT_DIR}"
 
-if [[ ! -f .env ]]; then
+if [[ ! -s .env.example ]]; then
+  echo "[run] ERROR: .env.example is missing or empty"
+  exit 1
+fi
+
+if [[ ! -s .env ]]; then
   cp .env.example .env
   echo "[run] Created .env from .env.example"
 fi
