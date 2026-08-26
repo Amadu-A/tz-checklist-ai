@@ -6,8 +6,21 @@ from pydantic import ValidationError
 from app.core.config import Settings
 
 
-def test_default_retrieval_configuration_is_safe() -> None:
+def test_default_retrieval_configuration_is_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Проверить production defaults retrieval pipeline."""
+    for variable in (
+        "RETRIEVAL_CHUNK_MAX_CHARS",
+        "RETRIEVAL_CHUNK_OVERLAP_CHARS",
+        "RETRIEVAL_TOP_K",
+        "RETRIEVAL_EMBEDDING_BATCH_SIZE",
+    ):
+        monkeypatch.delenv(
+            variable,
+            raising=False,
+        )
+
     settings = Settings(
         _env_file=None,
     )
@@ -24,7 +37,7 @@ def test_default_retrieval_configuration_is_safe() -> None:
 
     assert (
         settings.retrieval_top_k
-        == 6
+        == 4
     )
 
     assert (

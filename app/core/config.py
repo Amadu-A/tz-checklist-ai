@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     ollama_embedding_model: str = "qwen3-embedding:4b"
 
-    ollama_llm_model: str = "qwen3.8:27b"
+    ollama_llm_model: str = "qwen3-vl:8b-instruct"
 
     ollama_keep_alive: str = "1m"
 
@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     )
 
     retrieval_top_k: int = Field(
-        default=6,
+        default=4,
         ge=1,
         le=30,
     )
@@ -134,13 +134,13 @@ class Settings(BaseSettings):
     )
 
     answer_found_min_confidence: float = Field(
-        default=0.75,
+        default=0.60,
         ge=0,
         le=1,
     )
 
     answer_vlm_fallback_max_pages: int = Field(
-        default=12,
+        default=4,
         ge=1,
         le=50,
     )
