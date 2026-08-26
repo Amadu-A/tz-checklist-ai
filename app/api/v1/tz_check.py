@@ -37,7 +37,6 @@ from app.application.services.tz_check_workflow_service import (
 )
 from app.domain.enums import ChecklistCode
 
-
 router = APIRouter(
     tags=[
         "tz-check",

@@ -25,7 +25,6 @@ from app.domain.workflow import (
 )
 from app.main import app
 
-
 REQUEST_ID = uuid4()
 
 
