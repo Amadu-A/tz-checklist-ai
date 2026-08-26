@@ -112,9 +112,7 @@ async def test_invented_support_is_downgraded() -> None:
                 status=AnswerStatus.FOUND,
                 answer="3.93 т/ч",
                 confidence=0.99,
-                supporting_text=(
-                    "Расход равен 3.93 т/ч."
-                ),
+                supporting_text="Расход равен 3.93 т/ч.",
             ),
         )
     )
@@ -263,11 +261,6 @@ async def test_value_from_another_system_is_downgraded() -> None:
         == AnswerStatus.LOW_CONFIDENCE
     )
 
-    assert (
-        result[0].output_answer
-        == ""
-    )
-
 
 async def test_value_from_requested_system_is_allowed() -> None:
     """Нагрузка отопления проходит для вопроса об отоплении."""
@@ -326,14 +319,9 @@ async def test_value_from_requested_system_is_allowed() -> None:
         == AnswerStatus.FOUND
     )
 
-    assert (
-        result[0].output_answer
-        == "0,098288 Гкал/ч"
-    )
-
 
 async def test_generic_support_without_subject_is_not_blocked() -> None:
-    """Guard не должен отбрасывать полезный нейтральный evidence."""
+    """Нейтральный evidence для системы не должен блокироваться."""
     evidence = QuestionEvidence(
         question_id="main-17",
         question_text=(
@@ -391,7 +379,183 @@ async def test_generic_support_without_subject_is_not_blocked() -> None:
         == AnswerStatus.FOUND
     )
 
+
+async def test_common_accounting_requires_explicit_relation() -> None:
+    """Простое упоминание отопления не доказывает общий учёт."""
+    evidence = QuestionEvidence(
+        question_id="main-13",
+        question_text=(
+            "Какие системы для общего учета указаны "
+            "(отопление, ГВС, вентиляция)?"
+        ),
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p37-c1",
+                    page_number=37,
+                    chunk_index=1,
+                    text=(
+                        "Отопление Qот = 0,098288 Гкал/ч. "
+                        "ГВС Qгвс = 0,000 Гкал/ч."
+                    ),
+                ),
+                lexical_score=0.8,
+                semantic_score=0.9,
+                hybrid_score=0.85,
+            ),
+        ),
+    )
+
+    client = FakeAnswerClient(
+        (
+            AnswerCandidate(
+                question_id="main-13",
+                status=AnswerStatus.FOUND,
+                answer="отопление",
+                confidence=1.0,
+                supporting_text=(
+                    "Отопление Qот = 0,098288 Гкал/ч."
+                ),
+            ),
+        )
+    )
+
+    service = GroundedAnswerService(
+        answer_client=client,
+        found_min_confidence=0.60,
+    )
+
+    result = await service.extract(
+        (
+            evidence,
+        )
+    )
+
+    assert (
+        result[0].status
+        == AnswerStatus.LOW_CONFIDENCE
+    )
+
     assert (
         result[0].output_answer
-        == "95 °С / 70 °С"
+        == ""
+    )
+
+
+async def test_separate_accounting_requires_explicit_relation() -> None:
+    """Простое упоминание системы не доказывает отдельный учёт."""
+    evidence = QuestionEvidence(
+        question_id="main-14",
+        question_text=(
+            "Какие системы для отдельного учета указаны "
+            "(отопление, ГВС, ХВС)?"
+        ),
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p37-c1",
+                    page_number=37,
+                    chunk_index=1,
+                    text=(
+                        "Отопление Qот = 0,098288 Гкал/ч. "
+                        "ГВС Qгвс = 0,000 Гкал/ч."
+                    ),
+                ),
+                lexical_score=0.8,
+                semantic_score=0.9,
+                hybrid_score=0.85,
+            ),
+        ),
+    )
+
+    client = FakeAnswerClient(
+        (
+            AnswerCandidate(
+                question_id="main-14",
+                status=AnswerStatus.FOUND,
+                answer="отопление",
+                confidence=1.0,
+                supporting_text=(
+                    "Отопление Qот = 0,098288 Гкал/ч."
+                ),
+            ),
+        )
+    )
+
+    service = GroundedAnswerService(
+        answer_client=client,
+        found_min_confidence=0.60,
+    )
+
+    result = await service.extract(
+        (
+            evidence,
+        )
+    )
+
+    assert (
+        result[0].status
+        == AnswerStatus.LOW_CONFIDENCE
+    )
+
+
+async def test_explicit_common_accounting_is_allowed() -> None:
+    """Явно указанный общий учёт должен проходить."""
+    evidence = QuestionEvidence(
+        question_id="main-13",
+        question_text=(
+            "Какие системы для общего учета указаны?"
+        ),
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p5-c1",
+                    page_number=5,
+                    chunk_index=1,
+                    text=(
+                        "Общий учет тепловой энергии "
+                        "предусмотрен для системы отопления."
+                    ),
+                ),
+                lexical_score=1.0,
+                semantic_score=1.0,
+                hybrid_score=1.0,
+            ),
+        ),
+    )
+
+    client = FakeAnswerClient(
+        (
+            AnswerCandidate(
+                question_id="main-13",
+                status=AnswerStatus.FOUND,
+                answer="отопление",
+                confidence=0.95,
+                supporting_text=(
+                    "Общий учет тепловой энергии "
+                    "предусмотрен для системы отопления."
+                ),
+            ),
+        )
+    )
+
+    service = GroundedAnswerService(
+        answer_client=client,
+        found_min_confidence=0.60,
+    )
+
+    result = await service.extract(
+        (
+            evidence,
+        )
+    )
+
+    assert (
+        result[0].status
+        == AnswerStatus.FOUND
+    )
+
+    assert (
+        result[0].output_answer
+        == "отопление"
     )

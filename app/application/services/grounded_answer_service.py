@@ -20,10 +20,12 @@ class GroundedAnswerService:
     - присутствует supporting_text;
     - supporting_text реально существует в retrieved chunk;
     - все числа ответа существуют в supporting_text;
-    - evidence не относится явно к другой инженерной системе.
+    - evidence не относится явно к другой инженерной системе;
+    - если вопрос требует конкретный тип учёта, этот тип явно
+      присутствует в supporting_text.
 
-    Последняя проверка является узкой safety-защитой и не пытается
-    повторно интерпретировать весь текст ответа.
+    Эти проверки намеренно узкие: application layer не пытается
+    повторно интерпретировать весь естественный язык после LLM.
     """
 
     _NUMBER_RE = re.compile(
@@ -53,6 +55,26 @@ class GroundedAnswerService:
         ),
         "technology": (
             "технолог",
+        ),
+    }
+
+    _ACCOUNTING_RELATION_MARKERS = {
+        "common": (
+            "общийучет",
+            "общегоучета",
+            "общемучете",
+            "единыйучет",
+            "единогоучета",
+            "совместныйучет",
+            "совместногоучета",
+        ),
+        "separate": (
+            "отдельныйучет",
+            "отдельногоучета",
+            "отдельномучете",
+            "раздельныйучет",
+            "раздельногоучета",
+            "раздельномучете",
         ),
     }
 
@@ -234,6 +256,15 @@ class GroundedAnswerService:
                 candidate,
             )
 
+        if not self._accounting_relation_is_grounded(
+            evidence.question_text,
+            candidate.supporting_text,
+        ):
+            return self._low_confidence(
+                evidence,
+                candidate,
+            )
+
         return GroundedAnswer(
             question_id=evidence.question_id,
             status=AnswerStatus.FOUND,
@@ -331,24 +362,7 @@ class GroundedAnswerService:
         question: str,
         supporting_text: str,
     ) -> bool:
-        """Не переносить значение между явно разными системами.
-
-        Если система в supporting_text вообще явно не названа,
-        guard не вмешивается.
-
-        Поэтому формулировка вроде:
-
-            "Температурный график теплоснабжения..."
-
-        не блокируется для вопроса об отоплении.
-
-        Но:
-
-            вопрос: технологические нужды
-            evidence: 0,098288 Гкал/ч на отопление
-
-        не может получить FOUND.
-        """
+        """Не переносить значение между явно разными системами."""
         question_subjects = cls._find_subjects(
             question
         )
@@ -369,22 +383,44 @@ class GroundedAnswerService:
         )
 
     @classmethod
+    def _accounting_relation_is_grounded(
+        cls,
+        question: str,
+        supporting_text: str,
+    ) -> bool:
+        """Проверить явное подтверждение общего/отдельного учёта.
+
+        Само присутствие системы в расчёте или схеме не доказывает,
+        что эта система относится именно к общему либо отдельному учёту.
+        """
+        question_relation = (
+            cls._find_accounting_relation(
+                question
+            )
+        )
+
+        if question_relation is None:
+            return True
+
+        support_relation = (
+            cls._find_accounting_relation(
+                supporting_text
+            )
+        )
+
+        return (
+            support_relation
+            == question_relation
+        )
+
+    @classmethod
     def _find_subjects(
         cls,
         value: str,
     ) -> frozenset[str]:
         """Определить только явно названные системы."""
-        normalized = (
+        normalized = cls._compact(
             value
-            .casefold()
-            .replace(
-                "ё",
-                "е",
-            )
-            .replace(
-                " ",
-                "",
-            )
         )
 
         return frozenset(
@@ -395,6 +431,50 @@ class GroundedAnswerService:
                 marker
                 in normalized
                 for marker in markers
+            )
+        )
+
+    @classmethod
+    def _find_accounting_relation(
+        cls,
+        value: str,
+    ) -> str | None:
+        """Определить явно названный тип учёта."""
+        normalized = cls._compact(
+            value
+        )
+
+        for relation, markers in (
+            cls._ACCOUNTING_RELATION_MARKERS.items()
+        ):
+            if any(
+                marker
+                in normalized
+                for marker in markers
+            ):
+                return relation
+
+        return None
+
+    @staticmethod
+    def _compact(
+        value: str,
+    ) -> str:
+        """Нормализовать строку для поиска технических маркеров."""
+        return (
+            value
+            .casefold()
+            .replace(
+                "ё",
+                "е",
+            )
+            .replace(
+                " ",
+                "",
+            )
+            .replace(
+                "\n",
+                "",
             )
         )
 
