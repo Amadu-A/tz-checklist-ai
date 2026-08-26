@@ -15,10 +15,8 @@ if [[ ! -s .env.example ]]; then
   exit 1
 fi
 
-if [[ ! -s .env ]]; then
-  cp .env.example .env
-  echo "[run] Created .env from .env.example"
-fi
+echo "[run] Sync runtime .env"
+bash ./scripts/sync-env.sh
 
 echo "[run] Validate Docker Compose"
 docker compose config --quiet

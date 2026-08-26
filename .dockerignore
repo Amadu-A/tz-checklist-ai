@@ -1,16 +1,32 @@
-# .dockerignore
+# .gitignore
 
-.git
-.github
-
-.venv
 .env
+.env.*
+!.env.example
 
-.pytest_cache
-.ruff_cache
-__pycache__
-*.pyc
+.venv/
+__pycache__/
+*.py[cod]
 
-data
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-tests/fixtures/private
+.idea/
+.vscode/
+
+data/
+
+dist/
+build/
+*.egg-info/
+
+# Результаты ручных/E2E-проверок являются клиентскими копиями
+# пользовательских отчётов и не должны попадать в Git.
+artifacts/
+
+# Реальные документы используются локально для acceptance tests
+# и никогда не должны попадать в Git.
+tests/fixtures/private/*
+!tests/fixtures/private/.gitkeep

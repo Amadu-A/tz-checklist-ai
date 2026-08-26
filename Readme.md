@@ -1,189 +1,183 @@
-<!-- README.md -->
+<!-- Readme.md -->
 
 # TZ Checklist AI
 
-`TZ Checklist AI` — FastAPI backend-сервис для анализа PDF ТЗ, автоматического выбора одного из пяти фиксированных чек-листов и последующего заполнения найденными в документе ответами.
+`TZ Checklist AI` — backend-сервис на FastAPI для анализа PDF технических заданий, автоматической рекомендации одного из пяти фиксированных чек-листов и формирования заполненного PDF-отчёта.
 
-Сервис не содержит frontend и предназначен для интеграции с 1С / Telegram.
+Сервис предназначен для интеграции с 1С / Telegram и не содержит собственного прикладного frontend.
+
+## Что делает сервис
+
+Полный lifecycle:
+
+1. пользователь передаёт PDF ТЗ;
+2. сервис native-first анализом рекомендует чек-лист;
+3. пользователь подтверждает рекомендацию либо выбирает другой чек-лист;
+4. задача отправляется в project-specific RabbitMQ queue;
+5. worker последовательно выполняет retrieval и grounded answer extraction;
+6. при необходимости используется targeted VLM fallback только для выбранных страниц;
+7. формируется PDF с тремя колонками: `№ | Вопрос | Ответ`;
+8. исходный PDF удаляется после обработки;
+9. PDF-результат хранится временно до первого успешного получения;
+10. после `action=result` серверная копия результата и metadata job удаляются.
+
+Если подтверждённого evidence для вопроса нет, колонка ответа остаётся пустой.
 
 ## Поддерживаемые чек-листы
 
-- УУТЭ;
-- ИТП;
-- МКБИ;
-- СПД;
-- АУПТ.
+| Код | Чек-лист | Вопросов |
+|---|---|---:|
+| `UUTE` | УУТЭ | 41 |
+| `ITP` | ИТП | 75 |
+| `MKBI` | МКБИ | 82 |
+| `SPD` | СПД | 25 |
+| `AUPT` | АУПТ | 30 |
 
-Пользователь загружает PDF. Сервис предлагает чек-лист, пользователь подтверждает рекомендацию либо выбирает другой. После анализа формируется PDF:
+## Публичный API
 
-| № | Вопрос | Ответ |
-|---|---|---|
+Используется один endpoint:
 
-Если подтвержденного evidence нет, ответ остается пустым.
-
-## Архитектурные принципы
-
-Проект использует SOLID, Dependency Injection, Ports & Adapters, Composition Root, Repository Pattern, Use Case Pattern и Strategy/Fallback Pattern.
-
-Pydantic v2 используется для:
-- Settings;
-- YAML-определений чек-листов;
-- доменных моделей;
-- VLM JSON;
-- результатов классификации;
-- health/readiness;
-- будущих retrieval/extraction DTO.
-
-## Модели
-
-На этапе 2 реально используется только одна generative/VLM-модель:
-
-```dotenv
-OLLAMA_VLM_MODEL=qwen3-vl:8b-instruct
+```text
+POST /api/v1/tz-check
 ```
 
-Модель настраивается через `.env` и может быть заменена без изменения application layer.
+Endpoint работает как state machine через поле `action`.
 
-`qwen3-embedding:4b` зарезервирована для этапа 3 (semantic retrieval).
+### `action=select`
 
-`qwen3.8:27b` не является обязательной зависимостью проекта и сейчас не используется.
+Передаётся `action=select` и `file=<PDF>`. Ответ содержит `request_id`, `recommended_checklist`, `confidence`, ranking пяти чек-листов и источник классификации.
 
-## PDF: native text first
+### `action=confirm`
 
-Все страницы заранее в изображения не переводятся.
+Передаётся `action=confirm`, `request_id`, `checklist_code`. Код может совпадать с рекомендацией либо быть пользовательским override.
+
+### `action=status`
+
+Передаётся `action=status`, `request_id`.
+
+Возможные состояния:
+
+```text
+awaiting_confirmation
+queued
+processing
+completed
+failed
+```
+
+### `action=result`
+
+Передаётся `action=result`, `request_id`.
+
+При `completed` возвращается `application/pdf`. Результат одноразовый: после успешного чтения PDF в HTTP response backend удаляет `/data/jobs/<request_id>/result.pdf` и metadata задания. Повторный `action=result` возвращает `404`.
+
+## Архитектура
+
+Проект использует SOLID, Dependency Injection, Ports & Adapters, Composition Root, Repository Pattern, Use Case / Application Service Pattern, Strategy / targeted fallback и Pydantic v2.
 
 ```mermaid
 flowchart TD
     PDF[PDF] --> TEXT[PyMuPDF native text]
-    TEXT --> CLASS[ChecklistClassifier]
-    CLASS --> OK{Текста и confidence достаточно?}
-    OK -- Да --> RESULT[Рекомендация]
-    OK -- Нет --> RENDER[Render только нужных страниц]
-    RENDER --> VLM[Qwen3-VL]
-    VLM --> MERGE[Native text + visual evidence]
-    MERGE --> CLASS2[Повторная классификация]
-    CLASS2 --> RESULT
-```
-
-VLM используется как targeted fallback:
-- скан / пустой текстовый слой;
-- слабый text layer;
-- низкая confidence;
-- в будущем — релевантный чертеж, схема или сложная таблица.
-
-## Будущий анализ вопросов
-
-```mermaid
-flowchart TD
-    PDF[PDF] --> NATIVE[Native text]
-    NATIVE --> CHUNKS[Chunks]
-    CHUNKS --> EMB[Embeddings]
+    TEXT --> CLASS[Checklist classification]
+    CLASS --> CONFIRM[User confirmation / override]
+    CONFIRM --> MQ[RabbitMQ]
+    MQ --> WORKER[Celery worker concurrency=1]
+    WORKER --> CHUNKS[Page-aware chunks]
+    CHUNKS --> EMB[qwen3-embedding:4b]
     EMB --> RET[Hybrid retrieval]
-    RET --> EVIDENCE{Текстового evidence достаточно?}
-    EVIDENCE -- Да --> EXTRACT[Answer extraction]
-    EVIDENCE -- Нет / visual --> PAGE[Render relevant page]
-    PAGE --> VLM[VLM]
-    VLM --> EXTRACT
-    EXTRACT --> ANSWER[Короткий ответ или пусто]
+    RET --> LLM[qwen3.8:27b grounded extraction]
+    LLM --> CHECK{FOUND?}
+    CHECK -- Yes --> REPORT[ReportLab PDF]
+    CHECK -- No --> VLM[Targeted qwen3-vl fallback]
+    VLM --> REPORT
+    REPORT --> RESULT[Temporary result.pdf]
 ```
 
-## GPU
+## AI-модели
 
-На RTX 3090 24 GB задачи проекта выполняются последовательно:
+```dotenv
+OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
+OLLAMA_LLM_MODEL=qwen3.8:27b
+OLLAMA_VLM_MODEL=qwen3-vl:8b-instruct
+OLLAMA_KEEP_ALIVE=1m
+```
+
+Native text является основным источником. VLM используется только для слабых или visual-страниц. Embeddings документа вычисляются один раз на job и существуют только в RAM.
+
+Для `FOUND` требуется реальный `supporting_text`, достаточная confidence и соответствие чисел evidence. Иначе в итоговом PDF ответ остаётся пустым.
+
+## GPU policy
 
 ```dotenv
 GPU_TASK_CONCURRENCY=1
 VLM_PAGES_IN_FLIGHT=1
-OLLAMA_KEEP_ALIVE=1m
 ```
 
-`keep_alive=1m` передается в каждый VLM-запрос проекта.
+Worker работает с `--concurrency=1` и `--prefetch-multiplier=1`.
 
-## Чек-листы
-
-Пять постоянных XLSX нормализованы в YAML:
+Shared Ollama внутри Docker network:
 
 ```text
-resources/checklists/
-├── catalog.yaml
-├── manifest.yaml
-└── definitions/
-    ├── uute.yaml
-    ├── itp.yaml
-    ├── mkbi.yaml
-    ├── spd.yaml
-    └── aupt.yaml
+http://ollama:11434
 ```
 
-Количество вопросов:
-- UUTE — 41;
-- ITP — 75;
-- MKBI — 82;
-- SPD — 25;
-- AUPT — 30.
+## RabbitMQ
 
-ИТП сохраняет два исходных sheet. Ошибки исходных XLSX не исправляются скрытно и фиксируются в manifest.
+```dotenv
+RABBITMQ_VHOST=tz_checklist_ai
+RABBITMQ_USER=tz_checklist_ai
+CELERY_QUEUE_NAME=tz-checklist-ai
+```
 
-## Структура
+Пароль хранится только в `.env` и не коммитится.
+
+## Политика хранения
+
+Backend не является архивом документов.
 
 ```text
-tz-checklist-ai/
-├── app/
-│   ├── api/
-│   ├── core/
-│   ├── domain/
-│   ├── application/
-│   │   ├── ports/
-│   │   ├── services/
-│   │   └── use_cases/
-│   ├── infrastructure/
-│   │   ├── ai/
-│   │   ├── checklists/
-│   │   └── pdf/
-│   └── worker/
-├── resources/checklists/
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── acceptance/
-│   └── fixtures/private/
-├── scripts/
-├── Dockerfile
-├── compose.yaml
-├── pyproject.toml
-├── .env.example
-└── README.md
+select
+  -> /data/jobs/<job_id>/input.pdf
+
+worker завершён
+  -> input.pdf удалён
+
+completed
+  -> /data/jobs/<job_id>/result.pdf
+
+первый успешный action=result
+  -> bytes возвращены клиенту
+  -> result.pdf удалён
+  -> metadata удалена
 ```
 
-## План
+Celery Beat дополнительно удаляет просроченные jobs, старые filesystem orphan directories и stale `*.tmp`.
 
-1. FastAPI, DI, healthchecks, Docker, scripts, базовые тесты.
-2. Пять чек-листов, native-text-first PDF analysis, targeted VLM fallback, выбор и подтверждение чек-листа.
-3. RabbitMQ/GPU queue, embeddings, hybrid retrieval, extraction, PDF-отчет.
-4. Один endpoint, state machine, E2E/acceptance и финальная документация.
+Извлечённый текст, chunks, embeddings, evidence и ответы не сохраняются в persistent storage.
 
-## Тестирование
+## Реальные тестовые PDF
 
-Все проверки:
+Реальные документы кладутся только локально:
+
+```text
+tests/fixtures/private/
+```
+
+Они исключены из Git и Docker build context.
+
+Проверить доступные PDF:
 
 ```bash
-./scripts/test.sh
+find tests/fixtures/private -maxdepth 1 -type f -iname '*.pdf' -print
 ```
 
-Этап 2 автоматически проверяет:
-- Pydantic-валидацию чек-листов;
-- количества вопросов;
-- два sheet ИТП;
-- native text extraction;
-- targeted rendering;
-- отсутствие VLM при уверенной native-классификации;
-- VLM fallback при слабом text layer;
-- последовательные VLM-вызовы;
-- `keep_alive=1m`;
-- наличие configured VLM;
-- 5/5 классификацию реальных PDF.
+## Настройка `.env`
 
-PDF из `tests/fixtures/private/` не коммитятся.
+```bash
+bash ./scripts/sync-env.sh
+```
+
+Существующие значения и секреты не перезаписываются.
 
 ## Запуск
 
@@ -191,8 +185,121 @@ PDF из `tests/fixtures/private/` не коммитятся.
 ./scripts/run.sh
 ```
 
+Проверка:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 api
+docker compose logs --tail=200 worker
+docker compose logs --tail=200 beat
+```
+
 Остановка:
 
 ```bash
 ./scripts/stop.sh
 ```
+
+## Healthchecks и Swagger
+
+На сервере:
+
+```text
+http://127.0.0.1:8110/health/live
+http://127.0.0.1:8110/health/ready
+```
+
+При `API_BIND_IP=0.0.0.0` Swagger доступен по LAN:
+
+```text
+http://<SERVER_IP>:8110/docs
+```
+
+Например:
+
+```text
+http://192.168.10.150:8110/docs
+```
+
+Без reverse proxy / TLS используется именно `http://`, а не `https://`.
+
+Swagger удобен для `select`, `confirm` и `status`. Browser file chooser видит файлы на компьютере, где открыт браузер. PDF, существующий только на Linux-сервере в `tests/fixtures/private/`, через Windows browser file chooser напрямую выбрать нельзя.
+
+Для `action=result` надёжнее использовать `scripts/e2e-real.sh`, потому что endpoint возвращает бинарный PDF.
+
+## Полный E2E на реальном PDF
+
+Сначала:
+
+```bash
+./scripts/run.sh
+```
+
+Затем:
+
+```bash
+./scripts/e2e-real.sh "tests/fixtures/private/ИМЯ_ФАЙЛА.pdf"
+```
+
+Вторым аргументом можно передать override:
+
+```bash
+./scripts/e2e-real.sh "tests/fixtures/private/ИМЯ_ФАЙЛА.pdf" ITP
+```
+
+Скрипт автоматически выполняет `select -> confirm -> status -> result`, сохраняет клиентскую копию PDF, проверяет повторный `result=404`, отсутствие `/data/jobs/<request_id>` и отсутствие metadata.
+
+Результат сохраняется в:
+
+```text
+artifacts/e2e/
+```
+
+Это клиентская копия, а не backend retention. После проверки её можно удалить:
+
+```bash
+rm -f artifacts/e2e/*.pdf
+```
+
+## Почему результат можно открыть после удаления backend-файла
+
+Удаляется только временная серверная копия.
+
+```text
+server result.pdf
+      |
+      v
+read bytes successfully
+      |
+      +----> HTTP response ----> клиент сохраняет report.pdf
+      |
+      v
+delete backend result.pdf
+delete job metadata
+```
+
+Поэтому E2E-скрипт получает весь PDF по HTTP и сохраняет его в `artifacts/e2e/`, хотя `/data/jobs/<request_id>/result.pdf` уже удалён.
+
+## Автоматические тесты
+
+```bash
+./scripts/test.sh
+```
+
+Проверяются Docker Compose, Ruff, unit/integration tests, live Ollama, live RabbitMQ, retrieval, grounded extraction, ReportLab, privacy/retention failure paths и unified API state machine.
+
+## Финальная эксплуатационная проверка
+
+```bash
+git pull --ff-only
+bash ./scripts/sync-env.sh
+./scripts/test.sh
+./scripts/run.sh
+docker compose ps
+./scripts/e2e-real.sh "tests/fixtures/private/ИМЯ_ФАЙЛА.pdf"
+docker compose logs --tail=200 worker
+```
+
+Для полной acceptance-проверки повторить E2E для `UUTE`, `ITP`, `MKBI`, `SPD`, `AUPT`.
+
+После успешного реального E2E сервис готов к интеграции с внешним клиентом 1С / Telegram.
