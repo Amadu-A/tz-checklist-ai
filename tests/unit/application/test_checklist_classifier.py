@@ -10,22 +10,25 @@ from app.domain.checklists import (
     ChecklistCatalogEntry,
     ClassifierHint,
 )
-from app.domain.enums import (
-    ChecklistCode,
-)
+from app.domain.enums import ChecklistCode
 
 
 @pytest.fixture
 def classifier() -> ChecklistClassifier:
-    """Создать маленький изолированный каталог для unit tests."""
+    """Создать изолированный каталог для unit-тестов классификатора.
+
+    Тестовый каталог намеренно содержит все пять поддерживаемых
+    типов чек-листов, но только по одному сильному признаку на тип.
+    Это позволяет проверять непосредственно алгоритм классификации,
+    не связывая unit-тест с production YAML-файлами.
+    """
     catalog = ChecklistCatalog(
         checklists=(
             ChecklistCatalogEntry(
                 code=ChecklistCode.UUTE,
                 title="УУТЭ",
                 description=(
-                    "Узел учета "
-                    "тепловой энергии"
+                    "Узел учета тепловой энергии"
                 ),
                 classifier_hints=(
                     ClassifierHint(
@@ -41,8 +44,7 @@ def classifier() -> ChecklistClassifier:
                 code=ChecklistCode.ITP,
                 title="ИТП",
                 description=(
-                    "Индивидуальный "
-                    "тепловой пункт"
+                    "Индивидуальный тепловой пункт"
                 ),
                 classifier_hints=(
                     ClassifierHint(
@@ -58,8 +60,7 @@ def classifier() -> ChecklistClassifier:
                 code=ChecklistCode.MKBI,
                 title="МКБИ",
                 description=(
-                    "Блочно-модульная "
-                    "котельная"
+                    "Блочно-модульная котельная"
                 ),
                 classifier_hints=(
                     ClassifierHint(
@@ -91,8 +92,7 @@ def classifier() -> ChecklistClassifier:
                 code=ChecklistCode.AUPT,
                 title="АУПТ",
                 description=(
-                    "Установка "
-                    "пожаротушения"
+                    "Установка пожаротушения"
                 ),
                 classifier_hints=(
                     ClassifierHint(
@@ -160,7 +160,14 @@ def test_classifier_matches_russian_inflected_forms(
     document_text: str,
     expected_code: ChecklistCode,
 ) -> None:
-    """Русские падежи не должны ломать классификацию."""
+    """Русские падежи не должны ломать классификацию.
+
+    Production-каталог хранит канонические формулировки признаков,
+    однако в реальном ТЗ эти же термины встречаются в различных
+    грамматических формах.
+
+    Проверяем, что классификатор устойчив к таким изменениям.
+    """
     result = classifier.classify(
         document_text
     )
@@ -176,20 +183,25 @@ def test_classifier_matches_russian_inflected_forms(
     )
 
     assert (
-        result.ranking[0]
-        .matched_hints
+        result.ranking[0].matched_hints
     )
 
 
 def test_classifier_does_not_default_to_first_checklist_without_evidence(
     classifier: ChecklistClassifier,
 ) -> None:
-    """Неизвестный документ не должен автоматически становиться УУТЭ."""
+    """Неизвестный документ не должен автоматически становиться УУТЭ.
+
+    Если ни один классификационный признак не найден, правильное
+    поведение — вернуть отсутствие рекомендации, а не первый элемент
+    каталога.
+
+    В дальнейшем пользователь сможет самостоятельно выбрать
+    подходящий чек-лист.
+    """
     result = classifier.classify(
-        (
-            "Архитектурные решения фасада. "
-            "Отделка стен и оконные проемы."
-        )
+        "Архитектурные решения фасада. "
+        "Отделка стен и оконные проемы."
     )
 
     assert (
