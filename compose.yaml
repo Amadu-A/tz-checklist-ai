@@ -34,6 +34,62 @@ services:
       retries: 3
       start_period: 10s
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    env_file:
+      - .env
+
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker.celery_app:celery_app",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=${GPU_TASK_CONCURRENCY:-1}",
+        "--queues=${CELERY_QUEUE_NAME:-tz-checklist-ai}",
+        "--prefetch-multiplier=1"
+      ]
+
+    volumes:
+      - tz_checklist_data:/data
+
+    networks:
+      - app-net
+      - ai-shared
+
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    env_file:
+      - .env
+
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker.celery_app:celery_app",
+        "beat",
+        "--loglevel=INFO",
+        "--schedule=/tmp/celerybeat-schedule"
+      ]
+
+    volumes:
+      - tz_checklist_data:/data
+
+    networks:
+      - app-net
+      - ai-shared
+
+    restart: unless-stopped
+
 networks:
   app-net:
 

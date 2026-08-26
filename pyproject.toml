@@ -11,6 +11,7 @@ description = "AI service for selecting and filling construction checklists from
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
+    "celery>=5.5,<6",
     "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
     "pydantic>=2.11,<3",

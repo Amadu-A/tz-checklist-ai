@@ -23,12 +23,18 @@ RUN apt-get update \
     && mkdir -p /data \
     && chown -R app:app /data
 
+# Создаём минимальный placeholder package.
+# Благодаря этому dependency layer зависит от pyproject.toml,
+# но не зависит от изменений production-кода.
 COPY pyproject.toml /app/pyproject.toml
-COPY app /app/app
 
-RUN pip install --upgrade pip \
+RUN mkdir -p /app/app \
+    && touch /app/app/__init__.py \
+    && pip install --upgrade pip \
     && pip install '.[dev]'
 
+# Production code копируется уже после установки dependencies.
+COPY app /app/app
 COPY resources /app/resources
 COPY tests /app/tests
 COPY scripts /app/scripts

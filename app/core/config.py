@@ -2,20 +2,14 @@
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Единая конфигурация приложения.
-
-    Все параметры runtime и инфраструктуры приходят из environment
-    variables и валидируются Pydantic при старте приложения.
-
-    Ограничения GPU намеренно запрещают увеличить конкуренцию
-    на текущей RTX 3090 выше одного параллельного задания.
-    """
+    """Единая Pydantic-конфигурация приложения."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -34,8 +28,13 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://ollama:11434"
 
-    # На этапе 2 требуется только одна multimodal-модель.
-    ollama_vlm_model: str = "qwen3-vl:8b-instruct"
+    ollama_vlm_model: str = (
+        "qwen3-vl:8b-instruct"
+    )
+
+    ollama_embedding_model: str = (
+        "qwen3-embedding:4b"
+    )
 
     ollama_keep_alive: str = "1m"
 
@@ -96,6 +95,50 @@ class Settings(BaseSettings):
         le=95,
     )
 
+    rabbitmq_host: str = "rabbitmq"
+
+    rabbitmq_port: int = Field(
+        default=5672,
+        ge=1,
+        le=65535,
+    )
+
+    rabbitmq_vhost: str = (
+        "tz_checklist_ai"
+    )
+
+    rabbitmq_user: str = (
+        "tz_checklist_ai"
+    )
+
+    rabbitmq_password: SecretStr = SecretStr(
+        "change_me_before_use"
+    )
+
+    celery_queue_name: str = (
+        "tz-checklist-ai"
+    )
+
+    result_file_ttl_minutes: int = Field(
+        default=60,
+        ge=1,
+    )
+
+    orphan_job_ttl_hours: int = Field(
+        default=6,
+        ge=1,
+    )
+
+    failed_job_state_ttl_hours: int = Field(
+        default=24,
+        ge=1,
+    )
+
+    cleanup_interval_seconds: int = Field(
+        default=600,
+        ge=60,
+    )
+
     checklist_resources_dir: Path = Path(
         "/app/resources/checklists"
     )
@@ -104,11 +147,57 @@ class Settings(BaseSettings):
         "/test-data"
     )
 
-    rabbitmq_url: str | None = None
-
     data_dir: Path = Path(
         "/data"
     )
+
+    @property
+    def rabbitmq_url(
+        self,
+    ) -> str:
+        """Безопасно собрать AMQP URL из отдельных settings."""
+        user = quote(
+            self.rabbitmq_user,
+            safe="",
+        )
+
+        password = quote(
+            self.rabbitmq_password
+            .get_secret_value(),
+            safe="",
+        )
+
+        vhost = quote(
+            self.rabbitmq_vhost,
+            safe="",
+        )
+
+        return (
+            f"amqp://{user}:{password}"
+            f"@{self.rabbitmq_host}:"
+            f"{self.rabbitmq_port}/{vhost}"
+        )
+
+    @property
+    def jobs_dir(
+        self,
+    ) -> Path:
+        """Директория только временных binary-файлов."""
+        return (
+            self.data_dir
+            / "jobs"
+        )
+
+    @property
+    def job_database_path(
+        self,
+    ) -> Path:
+        """SQLite содержит только маленькие metadata."""
+        return (
+            self.data_dir
+            / "metadata"
+            / "jobs.sqlite3"
+        )
 
 
 @lru_cache

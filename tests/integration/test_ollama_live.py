@@ -7,7 +7,7 @@ from app.core.config import Settings
 
 
 class OllamaModel(BaseModel):
-    """Минимальная тестовая модель элемента /api/tags."""
+    """Минимальная модель элемента Ollama /api/tags."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -17,19 +17,21 @@ class OllamaModel(BaseModel):
 
 
 class OllamaTags(BaseModel):
-    """Минимальная структура ответа Ollama /api/tags."""
+    """Минимальный Pydantic contract /api/tags."""
 
     model_config = ConfigDict(
         extra="ignore",
     )
 
-    models: list[OllamaModel] = Field(
+    models: list[
+        OllamaModel
+    ] = Field(
         default_factory=list,
     )
 
 
 def test_shared_ollama_is_available() -> None:
-    """Shared Ollama должен быть доступен из application network."""
+    """Shared Ollama должна быть доступна из project network."""
     settings = Settings()
 
     response = httpx.get(
@@ -39,14 +41,17 @@ def test_shared_ollama_is_available() -> None:
             .rstrip("/")
             + "/api/tags"
         ),
-        timeout=10.0,
+        timeout=10,
     )
 
-    assert response.status_code == 200
+    assert (
+        response.status_code
+        == 200
+    )
 
 
-def test_configured_vlm_is_available() -> None:
-    """Проверяется только модель, реально необходимая на этапе 2."""
+def test_required_stage_three_models_are_available() -> None:
+    """На этапе 3 нужны одна VLM и одна embedding model."""
     settings = Settings()
 
     response = httpx.get(
@@ -56,7 +61,7 @@ def test_configured_vlm_is_available() -> None:
             .rstrip("/")
             + "/api/tags"
         ),
-        timeout=10.0,
+        timeout=10,
     )
 
     response.raise_for_status()
@@ -65,16 +70,22 @@ def test_configured_vlm_is_available() -> None:
         response.json()
     )
 
-    available_models = {
+    available = {
         model.name
         for model in tags.models
     }
 
-    assert (
-        settings.ollama_vlm_model
-        in available_models
-    ), (
-        "Configured VLM is missing in Ollama: "
-        f"{settings.ollama_vlm_model}"
+    required = {
+        settings.ollama_vlm_model,
+        settings.ollama_embedding_model,
+    }
+
+    missing = (
+        required
+        - available
     )
-    
+
+    assert not missing, (
+        "Missing Ollama models: "
+        f"{sorted(missing)}"
+    )

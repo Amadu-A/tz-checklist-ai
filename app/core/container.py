@@ -12,6 +12,12 @@ from app.application.services.document_content_service import (
 from app.application.services.readiness_service import (
     ReadinessService,
 )
+from app.application.services.result_delivery_service import (
+    ResultDeliveryService,
+)
+from app.application.services.retention_service import (
+    RetentionService,
+)
 from app.application.use_cases.confirm_checklist import (
     ConfirmChecklistUseCase,
 )
@@ -31,6 +37,15 @@ from app.infrastructure.checklists.yaml_checklist_repository import (
 from app.infrastructure.pdf.pymupdf_document_adapter import (
     PyMuPdfDocumentAdapter,
 )
+from app.infrastructure.persistence.sqlite_job_repository import (
+    SqliteJobRepository,
+)
+from app.infrastructure.queue.celery_task_queue import (
+    CeleryTaskQueue,
+)
+from app.infrastructure.storage.ephemeral_file_storage import (
+    EphemeralFileStorage,
+)
 
 
 @dataclass(
@@ -38,11 +53,7 @@ from app.infrastructure.pdf.pymupdf_document_adapter import (
     slots=True,
 )
 class Container:
-    """Composition Root приложения.
-
-    Только здесь concrete infrastructure adapters связываются
-    с application services и use cases.
-    """
+    """Composition Root приложения."""
 
     readiness_service: ReadinessService
 
@@ -58,13 +69,33 @@ class Container:
         ConfirmChecklistUseCase
     )
 
+    job_repository: (
+        SqliteJobRepository
+    )
+
+    job_storage: (
+        EphemeralFileStorage
+    )
+
+    task_queue: (
+        CeleryTaskQueue
+    )
+
+    result_delivery_service: (
+        ResultDeliveryService
+    )
+
+    retention_service: (
+        RetentionService
+    )
+
 
 @lru_cache
 def get_container() -> Container:
     """Собрать dependency graph приложения."""
     settings = get_settings()
 
-    repository = (
+    checklist_repository = (
         YamlChecklistRepository(
             settings
             .checklist_resources_dir
@@ -121,12 +152,11 @@ def get_container() -> Container:
 
     classifier = (
         ChecklistClassifier(
-            repository.get_catalog()
+            checklist_repository
+            .get_catalog()
         )
     )
 
-    # На этапе 2 readiness проверяет только ту AI-модель,
-    # которую проект действительно использует.
     ollama_health = (
         OllamaHealthClient(
             base_url=(
@@ -141,6 +171,67 @@ def get_container() -> Container:
             required_models=(
                 settings
                 .ollama_vlm_model,
+                settings
+                .ollama_embedding_model,
+            ),
+        )
+    )
+
+    job_repository = (
+        SqliteJobRepository(
+            settings
+            .job_database_path
+        )
+    )
+
+    job_storage = (
+        EphemeralFileStorage(
+            settings.jobs_dir
+        )
+    )
+
+    result_delivery_service = (
+        ResultDeliveryService(
+            repository=(
+                job_repository
+            ),
+            storage=(
+                job_storage
+            ),
+        )
+    )
+
+    retention_service = (
+        RetentionService(
+            repository=(
+                job_repository
+            ),
+            storage=(
+                job_storage
+            ),
+            result_ttl_minutes=(
+                settings
+                .result_file_ttl_minutes
+            ),
+            orphan_ttl_hours=(
+                settings
+                .orphan_job_ttl_hours
+            ),
+            failed_state_ttl_hours=(
+                settings
+                .failed_job_state_ttl_hours
+            ),
+        )
+    )
+
+    task_queue = (
+        CeleryTaskQueue(
+            broker_url=(
+                settings.rabbitmq_url
+            ),
+            queue_name=(
+                settings
+                .celery_queue_name
             ),
         )
     )
@@ -155,7 +246,7 @@ def get_container() -> Container:
         ),
 
         checklist_repository=(
-            repository
+            checklist_repository
         ),
 
         select_checklist_use_case=(
@@ -191,7 +282,27 @@ def get_container() -> Container:
 
         confirm_checklist_use_case=(
             ConfirmChecklistUseCase(
-                repository
+                checklist_repository
             )
+        ),
+
+        job_repository=(
+            job_repository
+        ),
+
+        job_storage=(
+            job_storage
+        ),
+
+        task_queue=(
+            task_queue
+        ),
+
+        result_delivery_service=(
+            result_delivery_service
+        ),
+
+        retention_service=(
+            retention_service
         ),
     )

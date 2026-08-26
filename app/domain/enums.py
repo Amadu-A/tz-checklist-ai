@@ -21,7 +21,30 @@ class ClassificationSource(StrEnum):
 
 
 class VlmFallbackReason(StrEnum):
-    """Причина подключения VLM к классификации документа."""
+    """Причина подключения VLM к классификации."""
 
     INSUFFICIENT_NATIVE_TEXT = "insufficient_native_text"
     LOW_CONFIDENCE = "low_confidence"
+
+
+class JobStatus(StrEnum):
+    """Состояние фонового анализа.
+
+    AWAITING_CONFIRMATION означает, что исходный PDF уже принят,
+    но пользователь ещё не подтвердил предложенный чек-лист.
+
+    QUEUED означает, что задание отправлено в RabbitMQ.
+
+    PROCESSING означает, что Celery worker уже начал анализ.
+
+    COMPLETED означает, что временный PDF-отчёт готов к одноразовой
+    выдаче клиенту.
+
+    FAILED означает, что обработка завершилась ошибкой.
+    """
+
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
