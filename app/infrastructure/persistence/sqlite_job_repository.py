@@ -188,6 +188,25 @@ class SqliteJobRepository:
                 ),
             )
 
+    def list_job_ids(
+        self,
+    ) -> frozenset[UUID]:
+        """Вернуть ID всех существующих metadata jobs."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT job_id
+                FROM jobs
+                """
+            ).fetchall()
+
+        return frozenset(
+            UUID(
+                row["job_id"]
+            )
+            for row in rows
+        )
+
     def find_older_than(
         self,
         *,

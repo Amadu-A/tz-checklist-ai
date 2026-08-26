@@ -14,14 +14,15 @@ from app.domain.enums import JobStatus
 class RetentionService:
     """Страховочная очистка временных файлов и job metadata.
 
-    Нормальный lifecycle удаляет файлы раньше TTL.
+    Нормальный lifecycle удаляет пользовательские файлы раньше TTL.
 
-    TTL нужен только для ситуаций:
+    Cleanup работает в два слоя:
 
-    - пользователь не подтвердил checklist;
-    - процесс/API был аварийно остановлен;
-    - клиент никогда не запросил готовый result;
-    - FAILED metadata больше не нужна.
+    1. удаляет просроченные jobs, известные repository;
+    2. выполняет filesystem sweep для artifacts без metadata.
+
+    Благодаря второму слою авария между filesystem и SQLite
+    не может оставить пользовательский PDF навсегда.
     """
 
     def __init__(
@@ -53,7 +54,7 @@ class RetentionService:
         *,
         now: datetime | None = None,
     ) -> int:
-        """Удалить просроченные jobs и вернуть их количество."""
+        """Удалить просроченные jobs/artifacts и вернуть их количество."""
         effective_now = (
             now
             if now is not None
@@ -121,7 +122,26 @@ class RetentionService:
                 job_id
             )
 
-        return len(
-            expired
+        # После удаления expired metadata получаем только действительно
+        # живые IDs. Любая старая filesystem directory вне этого набора
+        # является orphan artifact.
+        known_job_ids = (
+            self._repository
+            .list_job_ids()
         )
-    
+
+        filesystem_deleted = (
+            self._storage
+            .cleanup_orphaned_files(
+                known_job_ids=known_job_ids,
+                cutoff=(
+                    effective_now
+                    - self._orphan_ttl
+                ),
+            )
+        )
+
+        return (
+            len(expired)
+            + filesystem_deleted
+        )

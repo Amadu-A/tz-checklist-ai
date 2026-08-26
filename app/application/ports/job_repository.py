@@ -46,6 +46,12 @@ class JobRepositoryPort(Protocol):
         """Полностью удалить metadata задания."""
         ...
 
+    def list_job_ids(
+        self,
+    ) -> frozenset[UUID]:
+        """Вернуть ID всех зарегистрированных jobs."""
+        ...
+
     def find_older_than(
         self,
         *,
@@ -54,4 +60,3 @@ class JobRepositoryPort(Protocol):
     ) -> tuple[JobState, ...]:
         """Найти старые задания для retention cleanup."""
         ...
-    

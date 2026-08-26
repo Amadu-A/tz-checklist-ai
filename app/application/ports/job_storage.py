@@ -1,5 +1,6 @@
 # app/application/ports/job_storage.py
 
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -58,6 +59,15 @@ class JobStoragePort(Protocol):
         """Удалить все binary-файлы задания."""
         ...
 
+    def cleanup_orphaned_files(
+        self,
+        *,
+        known_job_ids: frozenset[UUID],
+        cutoff: datetime,
+    ) -> int:
+        """Удалить старые filesystem artifacts без живого job."""
+        ...
+
     def has_input(
         self,
         job_id: UUID,
@@ -71,4 +81,3 @@ class JobStoragePort(Protocol):
     ) -> bool:
         """Проверить наличие результирующего PDF."""
         ...
-    
