@@ -51,15 +51,9 @@ def test_rabbitmq_url_is_built_from_validated_settings() -> None:
     settings = Settings(
         _env_file=None,
         rabbitmq_host="rabbitmq",
-        rabbitmq_vhost=(
-            "tz_checklist_ai"
-        ),
-        rabbitmq_user=(
-            "tz_checklist_ai"
-        ),
-        rabbitmq_password=(
-            "pass@word"
-        ),
+        rabbitmq_vhost="tz_checklist_ai",
+        rabbitmq_user="tz_checklist_ai",
+        rabbitmq_password="pass@word",
     )
 
     assert (
@@ -72,4 +66,15 @@ def test_rabbitmq_url_is_built_from_validated_settings() -> None:
             "tz_checklist_ai"
         )
     )
-    
+
+
+def test_upload_limit_is_100_mib_by_default() -> None:
+    """API должен иметь явный ограничитель размера пользовательского PDF."""
+    settings = Settings(
+        _env_file=None,
+    )
+
+    assert (
+        settings.max_upload_bytes
+        == 100 * 1024 * 1024
+    )

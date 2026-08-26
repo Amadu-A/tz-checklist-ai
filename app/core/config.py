@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    max_upload_bytes: int = Field(
+        default=104857600,
+        ge=1,
+        le=1073741824,
+    )
+
     ollama_base_url: str = "http://ollama:11434"
 
     ollama_vlm_model: str = "qwen3-vl:8b-instruct"

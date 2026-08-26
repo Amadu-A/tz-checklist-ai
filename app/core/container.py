@@ -17,6 +17,9 @@ from app.application.services.hybrid_retriever import HybridRetriever
 from app.application.services.readiness_service import ReadinessService
 from app.application.services.result_delivery_service import ResultDeliveryService
 from app.application.services.retention_service import RetentionService
+from app.application.services.tz_check_workflow_service import (
+    TzCheckWorkflowService,
+)
 from app.application.services.visual_answer_fallback_service import (
     VisualAnswerFallbackService,
 )
@@ -61,6 +64,8 @@ class Container:
     checklist_answering_service: ChecklistAnsweringService
 
     analysis_pipeline_service: AnalysisPipelineService
+
+    tz_check_workflow_service: TzCheckWorkflowService
 
     job_repository: SqliteJobRepository
 
@@ -116,6 +121,20 @@ def get_container() -> Container:
 
     classifier = ChecklistClassifier(
         checklist_repository.get_catalog()
+    )
+
+    select_checklist_use_case = SelectChecklistUseCase(
+        content_service=content_service,
+        classifier=classifier,
+        classification_max_pages=settings.classification_max_pages,
+        min_native_chars=settings.classification_min_native_chars,
+        min_confidence=settings.classification_min_confidence,
+        min_page_chars=settings.classification_min_page_chars,
+        vlm_fallback_max_pages=settings.vlm_fallback_max_pages,
+    )
+
+    confirm_checklist_use_case = ConfirmChecklistUseCase(
+        checklist_repository
     )
 
     document_chunker = DocumentChunker(
@@ -204,6 +223,16 @@ def get_container() -> Container:
         report_renderer=report_renderer,
     )
 
+    tz_check_workflow_service = TzCheckWorkflowService(
+        select_use_case=select_checklist_use_case,
+        confirm_use_case=confirm_checklist_use_case,
+        repository=job_repository,
+        storage=job_storage,
+        task_queue=task_queue,
+        result_delivery_service=result_delivery_service,
+        max_upload_bytes=settings.max_upload_bytes,
+    )
+
     return Container(
         readiness_service=ReadinessService(
             dependencies=(
@@ -211,22 +240,13 @@ def get_container() -> Container:
             ),
         ),
         checklist_repository=checklist_repository,
-        select_checklist_use_case=SelectChecklistUseCase(
-            content_service=content_service,
-            classifier=classifier,
-            classification_max_pages=settings.classification_max_pages,
-            min_native_chars=settings.classification_min_native_chars,
-            min_confidence=settings.classification_min_confidence,
-            min_page_chars=settings.classification_min_page_chars,
-            vlm_fallback_max_pages=settings.vlm_fallback_max_pages,
-        ),
-        confirm_checklist_use_case=ConfirmChecklistUseCase(
-            checklist_repository
-        ),
+        select_checklist_use_case=select_checklist_use_case,
+        confirm_checklist_use_case=confirm_checklist_use_case,
         document_chunker=document_chunker,
         retriever=retriever,
         checklist_answering_service=checklist_answering_service,
         analysis_pipeline_service=analysis_pipeline_service,
+        tz_check_workflow_service=tz_check_workflow_service,
         job_repository=job_repository,
         job_storage=job_storage,
         task_queue=task_queue,
