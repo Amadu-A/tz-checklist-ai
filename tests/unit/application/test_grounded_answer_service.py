@@ -209,3 +209,194 @@ async def test_no_evidence_does_not_call_llm() -> None:
         client.calls
         == 0
     )
+
+
+async def test_value_from_another_system_is_downgraded() -> None:
+    """Нагрузка отопления не является ответом для тех. нужд."""
+    evidence = QuestionEvidence(
+        question_id="main-11",
+        question_text=(
+            "Какая максимальная тепловая нагрузка "
+            "на технологические нужды указана?"
+        ),
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p6-c1",
+                    page_number=6,
+                    chunk_index=1,
+                    text=(
+                        "Подключаемая тепловая нагрузка: "
+                        "Q = 0,098288 Гкал/ч - на отопление."
+                    ),
+                ),
+                lexical_score=0.6,
+                semantic_score=0.9,
+                hybrid_score=0.8,
+            ),
+        ),
+    )
+
+    client = FakeAnswerClient(
+        (
+            AnswerCandidate(
+                question_id="main-11",
+                status=AnswerStatus.FOUND,
+                answer="0,098288 Гкал/ч",
+                confidence=0.99,
+                supporting_text=(
+                    "Подключаемая тепловая нагрузка: "
+                    "Q = 0,098288 Гкал/ч - на отопление."
+                ),
+            ),
+        )
+    )
+
+    service = GroundedAnswerService(
+        answer_client=client,
+        found_min_confidence=0.75,
+    )
+
+    result = await service.extract(
+        (
+            evidence,
+        )
+    )
+
+    assert (
+        result[0].status
+        == AnswerStatus.LOW_CONFIDENCE
+    )
+
+    assert (
+        result[0].output_answer
+        == ""
+    )
+
+
+async def test_value_from_requested_system_is_allowed() -> None:
+    """Нагрузка отопления проходит для вопроса об отоплении."""
+    evidence = QuestionEvidence(
+        question_id="main-8",
+        question_text=(
+            "Какая максимальная тепловая нагрузка "
+            "на систему отопления указана?"
+        ),
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p6-c1",
+                    page_number=6,
+                    chunk_index=1,
+                    text=(
+                        "Подключаемая тепловая нагрузка: "
+                        "Q = 0,098288 Гкал/ч - на отопление."
+                    ),
+                ),
+                lexical_score=0.8,
+                semantic_score=0.95,
+                hybrid_score=0.9,
+            ),
+        ),
+    )
+
+    client = FakeAnswerClient(
+        (
+            AnswerCandidate(
+                question_id="main-8",
+                status=AnswerStatus.FOUND,
+                answer="0,098288 Гкал/ч",
+                confidence=0.99,
+                supporting_text=(
+                    "Подключаемая тепловая нагрузка: "
+                    "Q = 0,098288 Гкал/ч - на отопление."
+                ),
+            ),
+        )
+    )
+
+    service = GroundedAnswerService(
+        answer_client=client,
+        found_min_confidence=0.75,
+    )
+
+    result = await service.extract(
+        (
+            evidence,
+        )
+    )
+
+    assert (
+        result[0].status
+        == AnswerStatus.FOUND
+    )
+
+    assert (
+        result[0].output_answer
+        == "0,098288 Гкал/ч"
+    )
+
+
+async def test_answer_cannot_add_systems_absent_from_support() -> None:
+    """Варианты из вопроса не могут превратиться в invented answer."""
+    evidence = QuestionEvidence(
+        question_id="main-13",
+        question_text=(
+            "Какие системы для общего учета указаны "
+            "(отопление, ГВС, вентиляция, "
+            "технологические нужды)?"
+        ),
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p7-c1",
+                    page_number=7,
+                    chunk_index=1,
+                    text=(
+                        "Учет тепловой энергии выполняется "
+                        "для системы отопления."
+                    ),
+                ),
+                lexical_score=0.7,
+                semantic_score=0.9,
+                hybrid_score=0.83,
+            ),
+        ),
+    )
+
+    client = FakeAnswerClient(
+        (
+            AnswerCandidate(
+                question_id="main-13",
+                status=AnswerStatus.FOUND,
+                answer="Отопление, вентиляция, ГВС",
+                confidence=0.99,
+                supporting_text=(
+                    "Учет тепловой энергии выполняется "
+                    "для системы отопления."
+                ),
+            ),
+        )
+    )
+
+    service = GroundedAnswerService(
+        answer_client=client,
+        found_min_confidence=0.75,
+    )
+
+    result = await service.extract(
+        (
+            evidence,
+        )
+    )
+
+    assert (
+        result[0].status
+        == AnswerStatus.LOW_CONFIDENCE
+    )
+
+    assert (
+        result[0].output_answer
+        == ""
+    )
+    

@@ -48,6 +48,34 @@ async def test_answer_client_uses_structured_output_and_no_thinking() -> None:
             else payload["options"]["temperature"]
         ) == 0
 
+        system_prompt = (
+            payload[
+                "messages"
+            ][0]["content"]
+        )
+
+        assert (
+            "ТОЛЬКО evidence "
+            "внутри объекта с этим же question_id"
+            in system_prompt
+        )
+
+        assert (
+            "Текст вопроса НЕ является evidence"
+            in system_prompt
+        )
+
+        assert (
+            "Нельзя переносить значения "
+            "между разными системами"
+            in system_prompt
+        )
+
+        assert (
+            "технологические нужды"
+            in system_prompt
+        )
+
         return httpx.Response(
             200,
             json={
