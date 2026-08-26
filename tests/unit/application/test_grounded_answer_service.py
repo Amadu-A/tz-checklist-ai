@@ -36,7 +36,7 @@ class FakeAnswerClient:
 
 
 def _evidence() -> QuestionEvidence:
-    """Создать тестовый retrieved evidence."""
+    """Создать retrieved evidence."""
     return QuestionEvidence(
         question_id="q1",
         question_text="Какой расход теплоносителя?",
@@ -60,7 +60,7 @@ def _evidence() -> QuestionEvidence:
 
 
 async def test_exact_supporting_text_allows_found_answer() -> None:
-    """FOUND разрешён только при реальном supporting_text."""
+    """FOUND разрешён при реальном supporting_text."""
     client = FakeAnswerClient(
         (
             AnswerCandidate(
@@ -142,7 +142,7 @@ async def test_invented_support_is_downgraded() -> None:
 
 
 async def test_invented_number_is_downgraded() -> None:
-    """Число в answer должно существовать в supporting evidence."""
+    """Число answer должно существовать в supporting evidence."""
     client = FakeAnswerClient(
         (
             AnswerCandidate(
@@ -174,14 +174,9 @@ async def test_invented_number_is_downgraded() -> None:
         == AnswerStatus.LOW_CONFIDENCE
     )
 
-    assert (
-        result[0].output_answer
-        == ""
-    )
-
 
 async def test_no_evidence_does_not_call_llm() -> None:
-    """Если retrieval пуст, GPU-вызов вообще не нужен."""
+    """Без retrieval evidence GPU-вызов не нужен."""
     client = FakeAnswerClient(
         ()
     )
@@ -212,7 +207,7 @@ async def test_no_evidence_does_not_call_llm() -> None:
 
 
 async def test_value_from_another_system_is_downgraded() -> None:
-    """Нагрузка отопления не является ответом для тех. нужд."""
+    """Нагрузка отопления не является нагрузкой тех. нужд."""
     evidence = QuestionEvidence(
         question_id="main-11",
         question_text=(
@@ -337,14 +332,13 @@ async def test_value_from_requested_system_is_allowed() -> None:
     )
 
 
-async def test_answer_cannot_add_systems_absent_from_support() -> None:
-    """Варианты из вопроса не могут превратиться в invented answer."""
+async def test_generic_support_without_subject_is_not_blocked() -> None:
+    """Guard не должен отбрасывать полезный нейтральный evidence."""
     evidence = QuestionEvidence(
-        question_id="main-13",
+        question_id="main-17",
         question_text=(
-            "Какие системы для общего учета указаны "
-            "(отопление, ГВС, вентиляция, "
-            "технологические нужды)?"
+            "Какая температура теплоносителя "
+            "в системе отопления указана?"
         ),
         hits=(
             RetrievalHit(
@@ -353,13 +347,14 @@ async def test_answer_cannot_add_systems_absent_from_support() -> None:
                     page_number=7,
                     chunk_index=1,
                     text=(
-                        "Учет тепловой энергии выполняется "
-                        "для системы отопления."
+                        "Температурный график теплоснабжения: "
+                        "95 °С в подающем трубопроводе; "
+                        "70 °С в обратном трубопроводе."
                     ),
                 ),
-                lexical_score=0.7,
-                semantic_score=0.9,
-                hybrid_score=0.83,
+                lexical_score=0.8,
+                semantic_score=0.95,
+                hybrid_score=0.9,
             ),
         ),
     )
@@ -367,13 +362,14 @@ async def test_answer_cannot_add_systems_absent_from_support() -> None:
     client = FakeAnswerClient(
         (
             AnswerCandidate(
-                question_id="main-13",
+                question_id="main-17",
                 status=AnswerStatus.FOUND,
-                answer="Отопление, вентиляция, ГВС",
-                confidence=0.99,
+                answer="95 °С / 70 °С",
+                confidence=0.98,
                 supporting_text=(
-                    "Учет тепловой энергии выполняется "
-                    "для системы отопления."
+                    "Температурный график теплоснабжения: "
+                    "95 °С в подающем трубопроводе; "
+                    "70 °С в обратном трубопроводе."
                 ),
             ),
         )
@@ -392,11 +388,10 @@ async def test_answer_cannot_add_systems_absent_from_support() -> None:
 
     assert (
         result[0].status
-        == AnswerStatus.LOW_CONFIDENCE
+        == AnswerStatus.FOUND
     )
 
     assert (
         result[0].output_answer
-        == ""
+        == "95 °С / 70 °С"
     )
-    

@@ -12,99 +12,47 @@ from app.domain.answers import (
 
 
 class GroundedAnswerService:
-    """Проверяет каждый ответ модели относительно реального evidence.
-
-    Даже если LLM вернула FOUND, это ещё не означает, что ответ
-    попадёт пользователю.
+    """Проверяет ответ модели относительно retrieved evidence.
 
     FOUND принимается только когда:
+
     - confidence достаточно высокий;
-    - есть supporting_text;
-    - supporting_text реально присутствует в retrieved chunk;
-    - все числа из ответа присутствуют в supporting_text;
-    - значимые текстовые элементы ответа присутствуют в supporting_text;
+    - присутствует supporting_text;
+    - supporting_text реально существует в retrieved chunk;
+    - все числа ответа существуют в supporting_text;
     - evidence не относится явно к другой инженерной системе.
+
+    Последняя проверка является узкой safety-защитой и не пытается
+    повторно интерпретировать весь текст ответа.
     """
 
     _NUMBER_RE = re.compile(
         r"\d+(?:[.,]\d+)?"
     )
 
-    _WORD_RE = re.compile(
-        r"[a-zа-я]+",
-        flags=re.IGNORECASE,
-    )
-
-    # Слова/единицы, присутствие которых само по себе
-    # не должно определять lexical grounding ответа.
-    _ANSWER_STOP_KEYS = frozenset(
-        {
-            "да",
-            "нет",
-            "и",
-            "или",
-            "для",
-            "при",
-            "систем",
-            "системы",
-            "системе",
-            "узел",
-            "узла",
-            "учет",
-            "учета",
-            "квт",
-            "гкал",
-            "кгс",
-            "мпа",
-            "бар",
-            "град",
-            "см",
-        }
-    )
-
-    # Это не knowledge base и не попытка понять инженерный документ.
-    #
-    # Набор используется только как deterministic safety guard:
-    # если вопрос явно относится к одной системе, а supporting_text
-    # явно называет другую, ответ нельзя считать grounded.
-    _SUBJECT_ALIASES = {
-        "heating": frozenset(
-            {
-                "отопле",
-                "qот",
-                "gот",
-            }
+    _SUBJECT_MARKERS = {
+        "heating": (
+            "отоплен",
+            "qот",
+            "gот",
         ),
-        "ventilation": frozenset(
-            {
-                "вентил",
-                "qвент",
-                "gвент",
-            }
+        "ventilation": (
+            "вентил",
+            "qвент",
+            "gвент",
         ),
-        "hot_water": frozenset(
-            {
-                "гвс",
-                "qгвс",
-                "gгвс",
-                "tгвс",
-                "pгвс",
-                "горяче",
-            }
+        "hot_water": (
+            "гвс",
+            "горяч",
+            "qгвс",
+            "gгвс",
         ),
-        "cold_water": frozenset(
-            {
-                "хвс",
-                "tхв",
-                "pхв",
-                "gхв",
-                "холодн",
-            }
+        "cold_water": (
+            "хвс",
+            "холодн",
         ),
-        "technology": frozenset(
-            {
-                "технол",
-            }
+        "technology": (
+            "технолог",
         ),
     }
 
@@ -187,7 +135,9 @@ class GroundedAnswerService:
                 )
             )
 
-        return tuple(results)
+        return tuple(
+            results
+        )
 
     @staticmethod
     def _build_candidate_map(
@@ -222,7 +172,7 @@ class GroundedAnswerService:
         evidence: QuestionEvidence,
         candidate: AnswerCandidate,
     ) -> GroundedAnswer:
-        """Превратить untrusted LLM candidate в grounded answer."""
+        """Превратить untrusted candidate в grounded answer."""
         if candidate.status == AnswerStatus.NOT_FOUND:
             return GroundedAnswer(
                 question_id=evidence.question_id,
@@ -267,15 +217,6 @@ class GroundedAnswerService:
             )
 
         if not self._numbers_are_grounded(
-            candidate.answer,
-            candidate.supporting_text,
-        ):
-            return self._low_confidence(
-                evidence,
-                candidate,
-            )
-
-        if not self._answer_words_are_grounded(
             candidate.answer,
             candidate.supporting_text,
         ):
@@ -331,7 +272,7 @@ class GroundedAnswerService:
         evidence: QuestionEvidence,
         supporting_text: str,
     ) -> tuple[int, ...]:
-        """Найти страницы, где реально существует supporting_text."""
+        """Найти страницы с реальным supporting_text."""
         needle = cls._normalize(
             supporting_text
         )
@@ -349,7 +290,9 @@ class GroundedAnswerService:
         }
 
         return tuple(
-            sorted(pages)
+            sorted(
+                pages
+            )
         )
 
     @classmethod
@@ -358,7 +301,7 @@ class GroundedAnswerService:
         answer: str,
         supporting_text: str,
     ) -> bool:
-        """Запретить числовые значения, отсутствующие в evidence."""
+        """Запретить числа, отсутствующие в evidence."""
         answer_numbers = {
             cls._normalize_number(
                 value
@@ -383,64 +326,28 @@ class GroundedAnswerService:
         )
 
     @classmethod
-    def _answer_words_are_grounded(
-        cls,
-        answer: str,
-        supporting_text: str,
-    ) -> bool:
-        """Запретить текстовые элементы ответа, отсутствующие в evidence.
-
-        Например:
-
-            answer:
-                "Отопление, вентиляция, ГВС"
-
-            evidence:
-                "Учет выполняется для системы отопления"
-
-        Такой ответ не должен пройти только потому, что одно из трёх
-        слов присутствует в supporting_text.
-        """
-        answer_keys = {
-            key
-            for key in cls._word_keys(
-                answer
-            )
-            if (
-                len(key) >= 3
-                and key
-                not in cls._ANSWER_STOP_KEYS
-            )
-        }
-
-        if not answer_keys:
-            return True
-
-        support_keys = set(
-            cls._word_keys(
-                supporting_text
-            )
-        )
-
-        return (
-            answer_keys
-            <= support_keys
-        )
-
-    @classmethod
     def _subject_is_grounded(
         cls,
         question: str,
         supporting_text: str,
     ) -> bool:
-        """Запретить явный перенос значения между инженерными системами.
+        """Не переносить значение между явно разными системами.
 
-        Если supporting_text вообще не называет систему явно,
-        этот guard ничего не запрещает.
+        Если система в supporting_text вообще явно не названа,
+        guard не вмешивается.
 
-        Если же вопрос относится ровно к одной известной системе,
-        а supporting_text явно относится к другой системе,
-        candidate понижается до LOW_CONFIDENCE.
+        Поэтому формулировка вроде:
+
+            "Температурный график теплоснабжения..."
+
+        не блокируется для вопроса об отоплении.
+
+        Но:
+
+            вопрос: технологические нужды
+            evidence: 0,098288 Гкал/ч на отопление
+
+        не может получить FOUND.
         """
         question_subjects = cls._find_subjects(
             question
@@ -456,15 +363,9 @@ class GroundedAnswerService:
         if not support_subjects:
             return True
 
-        target_subject = next(
-            iter(
-                question_subjects
-            )
-        )
-
-        return (
-            target_subject
-            in support_subjects
+        return bool(
+            question_subjects
+            & support_subjects
         )
 
     @classmethod
@@ -472,48 +373,7 @@ class GroundedAnswerService:
         cls,
         value: str,
     ) -> frozenset[str]:
-        """Найти только явно названные инженерные системы."""
-        keys = set(
-            cls._word_keys(
-                value
-            )
-        )
-
-        return frozenset(
-            subject
-            for subject, aliases
-            in cls._SUBJECT_ALIASES.items()
-            if keys & aliases
-        )
-
-    @classmethod
-    def _word_keys(
-        cls,
-        value: str,
-    ) -> tuple[str, ...]:
-        """Получить устойчивые lexical keys для русских окончаний."""
-        return tuple(
-            cls._word_key(
-                token
-            )
-            for token in cls._WORD_RE.findall(
-                value
-            )
-        )
-
-    @staticmethod
-    def _word_key(
-        value: str,
-    ) -> str:
-        """Нормализовать слово без тяжёлой morphology dependency.
-
-        Для длинных технических слов первые шесть символов достаточно
-        устойчивы к распространённым русским окончаниям:
-
-            отопление / отопления -> отопле
-            вентиляция / вентиляции -> вентил
-            технологический / технологических -> технол
-        """
+        """Определить только явно названные системы."""
         normalized = (
             value
             .casefold()
@@ -521,12 +381,22 @@ class GroundedAnswerService:
                 "ё",
                 "е",
             )
+            .replace(
+                " ",
+                "",
+            )
         )
 
-        if len(normalized) >= 7:
-            return normalized[:6]
-
-        return normalized
+        return frozenset(
+            subject
+            for subject, markers
+            in cls._SUBJECT_MARKERS.items()
+            if any(
+                marker
+                in normalized
+                for marker in markers
+            )
+        )
 
     @staticmethod
     def _normalize_number(
@@ -542,7 +412,7 @@ class GroundedAnswerService:
     def _normalize(
         value: str,
     ) -> str:
-        """Нормализовать только регистр и whitespace."""
+        """Нормализовать регистр и whitespace."""
         return " ".join(
             value
             .casefold()

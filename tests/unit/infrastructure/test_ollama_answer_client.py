@@ -17,8 +17,8 @@ from app.infrastructure.ai.ollama_answer_client import (
 )
 
 
-async def test_answer_client_uses_structured_output_and_no_thinking() -> None:
-    """Ответ должен приходить в строгом JSON без thinking mode."""
+async def test_answer_client_uses_compact_grounded_prompt() -> None:
+    """Extraction prompt должен оставаться коротким и строгим."""
 
     async def handler(
         request: httpx.Request,
@@ -43,10 +43,9 @@ async def test_answer_client_uses_structured_output_and_no_thinking() -> None:
         )
 
         assert (
-            payload["temperature"]
-            if "temperature" in payload
-            else payload["options"]["temperature"]
-        ) == 0
+            payload["options"]["temperature"]
+            == 0
+        )
 
         system_prompt = (
             payload[
@@ -55,25 +54,25 @@ async def test_answer_client_uses_structured_output_and_no_thinking() -> None:
         )
 
         assert (
-            "ТОЛЬКО evidence "
-            "внутри объекта с этим же question_id"
+            "Каждый question_id независим"
             in system_prompt
         )
 
         assert (
-            "Текст вопроса НЕ является evidence"
-            in system_prompt
+            "текст вопроса"
+            in system_prompt.casefold()
         )
 
         assert (
-            "Нельзя переносить значения "
-            "между разными системами"
+            "Не переноси значения между"
             in system_prompt
         )
 
+        # Защита от повторного превращения extraction prompt
+        # в длинную экспертную инструкцию.
         assert (
-            "технологические нужды"
-            in system_prompt
+            len(system_prompt)
+            < 1800
         )
 
         return httpx.Response(
@@ -121,7 +120,9 @@ async def test_answer_client_uses_structured_output_and_no_thinking() -> None:
                     chunk_id="p1-c1",
                     page_number=1,
                     chunk_index=1,
-                    text="Расход составляет 3.93 т/ч.",
+                    text=(
+                        "Расход составляет 3.93 т/ч."
+                    ),
                 ),
                 lexical_score=1,
                 semantic_score=1,
