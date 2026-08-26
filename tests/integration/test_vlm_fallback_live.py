@@ -15,6 +15,10 @@ from app.application.use_cases.select_checklist import (
     SelectChecklistUseCase,
 )
 from app.core.config import Settings
+from app.domain.documents import (
+    PageVisionResult,
+    PdfPageImage,
+)
 from app.domain.enums import (
     ChecklistCode,
     ClassificationSource,
@@ -30,10 +34,57 @@ from app.infrastructure.pdf.pymupdf_document_adapter import (
 )
 
 
+class RecordingVlmClient:
+    """Декоратор VLM-клиента для диагностического integration test.
+
+    Production-поведение не изменяется: вызов делегируется настоящему
+    OllamaVlmClient.
+
+    Дополнительно сохраняется структурированный PageVisionResult,
+    чтобы при падении теста pytest автоматически показал текст,
+    реально извлечённый VLM.
+    """
+
+    def __init__(
+        self,
+        delegate: OllamaVlmClient,
+    ) -> None:
+        self._delegate = delegate
+
+        self.results: list[
+            PageVisionResult
+        ] = []
+
+    async def analyze_page(
+        self,
+        page: PdfPageImage,
+    ) -> PageVisionResult:
+        """Вызвать реальную VLM и сохранить её результат."""
+        result = (
+            await self._delegate
+            .analyze_page(
+                page
+            )
+        )
+
+        self.results.append(
+            result
+        )
+
+        return result
+
+
 def _create_scan_like_aupt_pdf(
     path: Path,
 ) -> None:
-    """Создать PDF, где русский текст существует только внутри изображения."""
+    """Создать PDF, где русский текст существует только внутри изображения.
+
+    Сначала создаётся обычная страница с текстом и рендерится в JPEG.
+    Затем JPEG помещается в новый PDF как единое изображение.
+
+    Поэтому итоговый PDF визуально содержит технический текст,
+    но PyMuPDF не может получить его через native text layer.
+    """
     source = fitz.open()
 
     page = source.new_page(
@@ -73,9 +124,11 @@ def _create_scan_like_aupt_pdf(
         fontname="dejavu",
     )
 
-    pixmap = page.get_pixmap(
-        dpi=144,
-        alpha=False,
+    pixmap = (
+        page.get_pixmap(
+            dpi=144,
+            alpha=False,
+        )
     )
 
     image_bytes = (
@@ -89,9 +142,11 @@ def _create_scan_like_aupt_pdf(
 
     scan = fitz.open()
 
-    scan_page = scan.new_page(
-        width=1000,
-        height=1400,
+    scan_page = (
+        scan.new_page(
+            width=1000,
+            height=1400,
+        )
     )
 
     scan_page.insert_image(
@@ -110,7 +165,7 @@ def _create_scan_like_aupt_pdf(
 async def test_real_vlm_is_used_for_scan_without_text_layer(
     tmp_path: Path,
 ) -> None:
-    """Полный fallback должен работать на настоящем shared Ollama."""
+    """Проверить настоящий native-text -> VLM fallback через shared Ollama."""
     settings = Settings()
 
     pdf_path = (
@@ -142,8 +197,8 @@ async def test_real_vlm_is_used_for_scan_without_text_layer(
         )
     )
 
-    # Сначала автоматически доказываем,
-    # что text layer действительно отсутствует.
+    # Сначала тест автоматически доказывает,
+    # что native text layer действительно отсутствует.
     native = (
         pdf_adapter.extract_text(
             pdf_path
@@ -155,6 +210,29 @@ async def test_real_vlm_is_used_for_scan_without_text_layer(
         == 0
     )
 
+    recording_vlm = (
+        RecordingVlmClient(
+            OllamaVlmClient(
+                base_url=(
+                    settings
+                    .ollama_base_url
+                ),
+                model=(
+                    settings
+                    .ollama_vlm_model
+                ),
+                keep_alive=(
+                    settings
+                    .ollama_keep_alive
+                ),
+                timeout_seconds=(
+                    settings
+                    .ollama_request_timeout_seconds
+                ),
+            )
+        )
+    )
+
     service = (
         DocumentContentService(
             text_extractor=(
@@ -164,24 +242,7 @@ async def test_real_vlm_is_used_for_scan_without_text_layer(
                 pdf_adapter
             ),
             vlm_client=(
-                OllamaVlmClient(
-                    base_url=(
-                        settings
-                        .ollama_base_url
-                    ),
-                    model=(
-                        settings
-                        .ollama_vlm_model
-                    ),
-                    keep_alive=(
-                        settings
-                        .ollama_keep_alive
-                    ),
-                    timeout_seconds=(
-                        settings
-                        .ollama_request_timeout_seconds
-                    ),
-                )
+                recording_vlm
             ),
         )
     )
@@ -224,9 +285,19 @@ async def test_real_vlm_is_used_for_scan_without_text_layer(
         == (1,)
     )
 
+    visual_text = "\n\n".join(
+        item.searchable_text
+        for item
+        in recording_vlm.results
+    )
+
     assert (
         result
         .suggestion
         .recommended_code
         == ChecklistCode.AUPT
+    ), (
+        "VLM fallback выбрал неверный чек-лист. "
+        f"VLM text={visual_text!r}; "
+        f"ranking={result.suggestion.ranking}"
     )
