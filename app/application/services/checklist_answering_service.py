@@ -18,19 +18,23 @@ from app.domain.retrieval import DocumentChunk
 class ChecklistAnsweringService:
     """Заполняет один checklist только evidence из документа.
 
-    Retrieval query намеренно содержит больше контекста, чем
-    пользовательский вопрос:
+    Контекст вопроса содержит:
 
         section title
         + normalized checklist label
         + original question
 
-    Это помогает semantic/lexical retrieval находить формулировки,
-    отличающиеся от текста исходного Excel-вопроса.
+    Один и тот же контекст используется:
 
-    Сам LLM при этом получает оригинальный question_text,
-    поэтому дополнительный retrieval context не превращается
-    в искусственный answer evidence.
+    - для semantic/lexical retrieval;
+    - для понимания смысла вопроса answer-моделью.
+
+    Сам section/label не является evidence и не может быть источником
+    ответа. Он только помогает модели различать, например:
+
+        объект и узел учета;
+        отопление и вентиляцию;
+        организацию и разработчика.
     """
 
     def __init__(
@@ -72,7 +76,7 @@ class ChecklistAnsweringService:
             for question in section.questions
         )
 
-        retrieval_queries = tuple(
+        question_contexts = tuple(
             self._build_retrieval_query(
                 section_title=section_title,
                 question=question,
@@ -83,7 +87,7 @@ class ChecklistAnsweringService:
 
         retrieval_results = (
             await self._retriever.retrieve_many(
-                retrieval_queries,
+                question_contexts,
                 index,
             )
         )
@@ -91,14 +95,22 @@ class ChecklistAnsweringService:
         evidence_items = tuple(
             QuestionEvidence(
                 question_id=question.id,
-                question_text=question.text,
+
+                # В answer layer передаём не только исходный вопрос,
+                # но и его section/label context.
+                #
+                # Эти строки не являются evidence:
+                # LLM всё равно разрешено отвечать только по hits.
+                question_text=question_context,
+
                 hits=retrieval.hits,
             )
             for (
                 _,
                 question,
-            ), retrieval in zip(
+            ), question_context, retrieval in zip(
                 question_entries,
+                question_contexts,
                 retrieval_results,
                 strict=True,
             )
@@ -133,7 +145,7 @@ class ChecklistAnsweringService:
         section_title: str,
         question: ChecklistQuestion,
     ) -> str:
-        """Добавить к embedding query семантический контекст чек-листа."""
+        """Добавить к вопросу семантический контекст чек-листа."""
         parts = [
             section_title.strip(),
         ]

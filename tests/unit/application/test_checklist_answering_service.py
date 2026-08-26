@@ -52,12 +52,17 @@ class FakeRetriever:
 
 
 class FakeAnswerService:
-    """Возвращает пустой grounded answer без LLM."""
+    """Фиксирует evidence, переданный answer-слою."""
+
+    def __init__(self) -> None:
+        self.items = ()
 
     async def extract(
         self,
         items,
     ):
+        self.items = items
+
         return tuple(
             GroundedAnswer(
                 question_id=item.question_id,
@@ -68,13 +73,15 @@ class FakeAnswerService:
         )
 
 
-async def test_retrieval_query_contains_section_label_and_question() -> None:
-    """Retrieval должен получать контекст, отсутствующий в Excel-вопросе."""
+async def test_retrieval_and_answer_receive_question_context() -> None:
+    """Section и label должны помогать retrieval и answer extraction."""
     retriever = FakeRetriever()
+
+    answer_service = FakeAnswerService()
 
     service = ChecklistAnsweringService(
         retriever=retriever,
-        answer_service=FakeAnswerService(),
+        answer_service=answer_service,
         answer_batch_size=6,
     )
 
@@ -115,11 +122,29 @@ async def test_retrieval_query_contains_section_label_and_question() -> None:
         chunks=(),
     )
 
-    assert retriever.queries == (
-        (
-            "Сведения о Заказчике\n"
-            "Наименование объекта\n"
-            "Какое наименование "
-            "проектируемого объекта указано?"
-        ),
+    expected_context = (
+        "Сведения о Заказчике\n"
+        "Наименование объекта\n"
+        "Какое наименование "
+        "проектируемого объекта указано?"
     )
+
+    assert (
+        retriever.queries
+        == (
+            expected_context,
+        )
+    )
+
+    assert (
+        len(answer_service.items)
+        == 1
+    )
+
+    assert (
+        answer_service
+        .items[0]
+        .question_text
+        == expected_context
+    )
+    
