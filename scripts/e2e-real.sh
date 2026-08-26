@@ -356,12 +356,7 @@ while true; do
     date +%s
   )"
 
-  ELAPSED="$(
-    (
-      CURRENT_TIMESTAMP
-      - START_TIMESTAMP
-    )
-  )"
+  ELAPSED=$((CURRENT_TIMESTAMP - START_TIMESTAMP))
 
   if (( ELAPSED > TIMEOUT_SECONDS )); then
     echo "[e2e] ERROR: timeout after ${TIMEOUT_SECONDS}s"
