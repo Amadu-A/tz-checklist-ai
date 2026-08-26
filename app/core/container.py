@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from functools import lru_cache
 
+from app.application.services.analysis_pipeline_service import (
+    AnalysisPipelineService,
+)
 from app.application.services.checklist_answering_service import (
     ChecklistAnsweringService,
 )
@@ -14,6 +17,9 @@ from app.application.services.hybrid_retriever import HybridRetriever
 from app.application.services.readiness_service import ReadinessService
 from app.application.services.result_delivery_service import ResultDeliveryService
 from app.application.services.retention_service import RetentionService
+from app.application.services.visual_answer_fallback_service import (
+    VisualAnswerFallbackService,
+)
 from app.application.use_cases.confirm_checklist import ConfirmChecklistUseCase
 from app.application.use_cases.select_checklist import SelectChecklistUseCase
 from app.core.config import get_settings
@@ -27,6 +33,9 @@ from app.infrastructure.checklists.yaml_checklist_repository import (
 from app.infrastructure.pdf.pymupdf_document_adapter import PyMuPdfDocumentAdapter
 from app.infrastructure.persistence.sqlite_job_repository import SqliteJobRepository
 from app.infrastructure.queue.celery_task_queue import CeleryTaskQueue
+from app.infrastructure.reporting.reportlab_checklist_renderer import (
+    ReportLabChecklistRenderer,
+)
 from app.infrastructure.storage.ephemeral_file_storage import EphemeralFileStorage
 
 
@@ -50,6 +59,8 @@ class Container:
     retriever: HybridRetriever
 
     checklist_answering_service: ChecklistAnsweringService
+
+    analysis_pipeline_service: AnalysisPipelineService
 
     job_repository: SqliteJobRepository
 
@@ -131,6 +142,18 @@ def get_container() -> Container:
         answer_batch_size=settings.answer_batch_size,
     )
 
+    visual_fallback_service = VisualAnswerFallbackService(
+        content_service=content_service,
+        chunker=document_chunker,
+        retriever=retriever,
+        answer_service=grounded_answer_service,
+        answer_batch_size=settings.answer_batch_size,
+        max_pages=settings.answer_vlm_fallback_max_pages,
+        weak_page_max_chars=settings.answer_vlm_weak_page_max_chars,
+    )
+
+    report_renderer = ReportLabChecklistRenderer()
+
     ollama_health = OllamaHealthClient(
         base_url=settings.ollama_base_url,
         timeout_seconds=min(
@@ -170,6 +193,17 @@ def get_container() -> Container:
         queue_name=settings.celery_queue_name,
     )
 
+    analysis_pipeline_service = AnalysisPipelineService(
+        repository=job_repository,
+        storage=job_storage,
+        checklist_repository=checklist_repository,
+        content_service=content_service,
+        chunker=document_chunker,
+        answering_service=checklist_answering_service,
+        visual_fallback_service=visual_fallback_service,
+        report_renderer=report_renderer,
+    )
+
     return Container(
         readiness_service=ReadinessService(
             dependencies=(
@@ -192,6 +226,7 @@ def get_container() -> Container:
         document_chunker=document_chunker,
         retriever=retriever,
         checklist_answering_service=checklist_answering_service,
+        analysis_pipeline_service=analysis_pipeline_service,
         job_repository=job_repository,
         job_storage=job_storage,
         task_queue=task_queue,

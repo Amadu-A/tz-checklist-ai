@@ -133,6 +133,18 @@ class Settings(BaseSettings):
         le=1,
     )
 
+    answer_vlm_fallback_max_pages: int = Field(
+        default=12,
+        ge=1,
+        le=50,
+    )
+
+    answer_vlm_weak_page_max_chars: int = Field(
+        default=80,
+        ge=0,
+        le=2000,
+    )
+
     pdf_render_dpi: int = Field(
         default=144,
         ge=72,
