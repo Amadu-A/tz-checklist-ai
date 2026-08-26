@@ -3,9 +3,13 @@
 from dataclasses import dataclass
 from functools import lru_cache
 
+from app.application.services.checklist_answering_service import (
+    ChecklistAnsweringService,
+)
 from app.application.services.checklist_classifier import ChecklistClassifier
 from app.application.services.document_chunker import DocumentChunker
 from app.application.services.document_content_service import DocumentContentService
+from app.application.services.grounded_answer_service import GroundedAnswerService
 from app.application.services.hybrid_retriever import HybridRetriever
 from app.application.services.readiness_service import ReadinessService
 from app.application.services.result_delivery_service import ResultDeliveryService
@@ -13,6 +17,7 @@ from app.application.services.retention_service import RetentionService
 from app.application.use_cases.confirm_checklist import ConfirmChecklistUseCase
 from app.application.use_cases.select_checklist import SelectChecklistUseCase
 from app.core.config import get_settings
+from app.infrastructure.ai.ollama_answer_client import OllamaAnswerClient
 from app.infrastructure.ai.ollama_embedding_client import OllamaEmbeddingClient
 from app.infrastructure.ai.ollama_health_client import OllamaHealthClient
 from app.infrastructure.ai.ollama_vlm_client import OllamaVlmClient
@@ -43,6 +48,8 @@ class Container:
     document_chunker: DocumentChunker
 
     retriever: HybridRetriever
+
+    checklist_answering_service: ChecklistAnsweringService
 
     job_repository: SqliteJobRepository
 
@@ -83,6 +90,13 @@ def get_container() -> Container:
         timeout_seconds=settings.ollama_request_timeout_seconds,
     )
 
+    answer_client = OllamaAnswerClient(
+        base_url=settings.ollama_base_url,
+        model=settings.ollama_llm_model,
+        keep_alive=settings.ollama_keep_alive,
+        timeout_seconds=settings.ollama_request_timeout_seconds,
+    )
+
     content_service = DocumentContentService(
         text_extractor=pdf_adapter,
         page_renderer=pdf_adapter,
@@ -106,6 +120,17 @@ def get_container() -> Container:
         lexical_weight=settings.retrieval_lexical_weight,
     )
 
+    grounded_answer_service = GroundedAnswerService(
+        answer_client=answer_client,
+        found_min_confidence=settings.answer_found_min_confidence,
+    )
+
+    checklist_answering_service = ChecklistAnsweringService(
+        retriever=retriever,
+        answer_service=grounded_answer_service,
+        answer_batch_size=settings.answer_batch_size,
+    )
+
     ollama_health = OllamaHealthClient(
         base_url=settings.ollama_base_url,
         timeout_seconds=min(
@@ -115,6 +140,7 @@ def get_container() -> Container:
         required_models=(
             settings.ollama_vlm_model,
             settings.ollama_embedding_model,
+            settings.ollama_llm_model,
         ),
     )
 
@@ -165,6 +191,7 @@ def get_container() -> Container:
         ),
         document_chunker=document_chunker,
         retriever=retriever,
+        checklist_answering_service=checklist_answering_service,
         job_repository=job_repository,
         job_storage=job_storage,
         task_queue=task_queue,

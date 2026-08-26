@@ -3,29 +3,23 @@
 import math
 import re
 
-from app.application.ports.embedding_client import (
-    EmbeddingClientPort,
-)
+from app.application.ports.embedding_client import EmbeddingClientPort
 from app.domain.retrieval import (
     DocumentChunk,
+    EmbeddedChunk,
     RetrievalHit,
+    RetrievalIndex,
     RetrievalResult,
 )
 
 
 class HybridRetriever:
-    """Ищет evidence одновременно lexical и semantic способами.
+    """Hybrid retrieval с одноразовой индексацией документа.
 
-    Semantic retrieval хорошо находит смысловые переформулировки.
+    Embeddings chunks вычисляются один раз на job.
 
-    Lexical retrieval полезен для:
-    - маркировок оборудования;
-    - чисел;
-    - единиц измерения;
-    - аббревиатур;
-    - точных технических терминов.
-
-    Поэтому использовать только embeddings здесь нежелательно.
+    После этого любое количество вопросов использует один
+    RetrievalIndex, существующий исключительно в RAM.
     """
 
     _WORD_RE = re.compile(
@@ -109,7 +103,6 @@ class HybridRetriever:
         self._top_k = top_k
         self._batch_size = batch_size
 
-        # Нормализуем веса, поэтому config не обязан давать ровно 1.0.
         self._semantic_weight = (
             semantic_weight
             / total_weight
@@ -120,85 +113,163 @@ class HybridRetriever:
             / total_weight
         )
 
+    async def build_index(
+        self,
+        chunks: tuple[DocumentChunk, ...],
+    ) -> RetrievalIndex:
+        """Вычислить embeddings chunks ровно один раз."""
+        if not chunks:
+            return RetrievalIndex()
+
+        vectors = await self._embed_texts(
+            tuple(
+                chunk.text
+                for chunk in chunks
+            )
+        )
+
+        if len(vectors) != len(chunks):
+            raise ValueError(
+                "Embedding client returned unexpected vector count"
+            )
+
+        return RetrievalIndex(
+            items=tuple(
+                EmbeddedChunk(
+                    chunk=chunk,
+                    embedding=vector,
+                )
+                for chunk, vector in zip(
+                    chunks,
+                    vectors,
+                    strict=True,
+                )
+            )
+        )
+
+    async def retrieve_many(
+        self,
+        queries: tuple[str, ...],
+        index: RetrievalIndex,
+    ) -> tuple[RetrievalResult, ...]:
+        """Найти evidence сразу для нескольких вопросов."""
+        normalized_queries = tuple(
+            query.strip()
+            for query in queries
+        )
+
+        if any(
+            not query
+            for query in normalized_queries
+        ):
+            raise ValueError(
+                "queries cannot contain empty strings"
+            )
+
+        if not normalized_queries:
+            return ()
+
+        if not index.items:
+            return tuple(
+                RetrievalResult(
+                    query=query
+                )
+                for query in normalized_queries
+            )
+
+        query_vectors = await self._embed_texts(
+            normalized_queries
+        )
+
+        return tuple(
+            self._rank(
+                query=query,
+                query_vector=query_vector,
+                index=index,
+            )
+            for query, query_vector in zip(
+                normalized_queries,
+                query_vectors,
+                strict=True,
+            )
+        )
+
     async def retrieve(
         self,
         query: str,
         chunks: tuple[DocumentChunk, ...],
     ) -> RetrievalResult:
-        """Вернуть наиболее релевантные fragments документа."""
-        normalized_query = query.strip()
+        """Совместимый helper для поиска одного вопроса.
 
-        if not normalized_query:
-            raise ValueError(
-                "query cannot be empty"
-            )
-
-        if not chunks:
-            return RetrievalResult(
-                query=normalized_query,
-            )
-
-        query_embeddings = (
-            await self._embedding_client.embed(
-                (
-                    normalized_query,
-                )
-            )
+        Production pipeline должен предпочитать build_index()
+        + retrieve_many(), чтобы chunks не embedding-ились повторно.
+        """
+        index = await self.build_index(
+            chunks
         )
 
-        query_vector = query_embeddings[0]
+        results = await self.retrieve_many(
+            (
+                query,
+            ),
+            index,
+        )
 
-        chunk_vectors: list[
+        return results[0]
+
+    async def _embed_texts(
+        self,
+        texts: tuple[str, ...],
+    ) -> tuple[tuple[float, ...], ...]:
+        """Получить embeddings батчами с сохранением порядка."""
+        result: list[
             tuple[float, ...]
         ] = []
 
         for start in range(
             0,
-            len(chunks),
+            len(texts),
             self._batch_size,
         ):
-            batch = chunks[
+            batch = texts[
                 start:
                 start + self._batch_size
             ]
 
-            vectors = (
-                await self._embedding_client.embed(
-                    tuple(
-                        chunk.text
-                        for chunk in batch
-                    )
-                )
+            vectors = await self._embedding_client.embed(
+                batch
             )
 
-            chunk_vectors.extend(
+            if len(vectors) != len(batch):
+                raise ValueError(
+                    "Embedding client returned unexpected vector count"
+                )
+
+            result.extend(
                 vectors
             )
 
-        if len(chunk_vectors) != len(chunks):
-            raise ValueError(
-                "Embedding client returned unexpected vector count"
-            )
+        return tuple(result)
 
+    def _rank(
+        self,
+        *,
+        query: str,
+        query_vector: tuple[float, ...],
+        index: RetrievalIndex,
+    ) -> RetrievalResult:
+        """Посчитать hybrid score для одного query."""
         hits: list[RetrievalHit] = []
 
-        for chunk, vector in zip(
-            chunks,
-            chunk_vectors,
-            strict=True,
-        ):
-            lexical_score = (
-                self._lexical_score(
-                    normalized_query,
-                    chunk.text,
-                )
+        for item in index.items:
+            lexical_score = self._lexical_score(
+                query,
+                item.chunk.text,
             )
 
-            semantic_score = (
-                self._cosine_similarity(
-                    query_vector,
-                    vector,
-                )
+            semantic_score = self._cosine_similarity(
+                query_vector,
+                item.embedding,
             )
 
             hybrid_score = (
@@ -210,7 +281,7 @@ class HybridRetriever:
 
             hits.append(
                 RetrievalHit(
-                    chunk=chunk,
+                    chunk=item.chunk,
                     lexical_score=round(
                         lexical_score,
                         6,
@@ -235,11 +306,9 @@ class HybridRetriever:
         )
 
         return RetrievalResult(
-            query=normalized_query,
+            query=query,
             hits=tuple(
-                hits[
-                    :self._top_k
-                ]
+                hits[:self._top_k]
             ),
         )
 
@@ -250,8 +319,10 @@ class HybridRetriever:
         text: str,
     ) -> float:
         """Оценить долю значимых query tokens в fragment."""
-        query_tokens = cls._tokenize(
-            query
+        query_tokens = set(
+            cls._tokenize(
+                query
+            )
         )
 
         if not query_tokens:
@@ -263,27 +334,15 @@ class HybridRetriever:
             )
         )
 
-        matched = sum(
-            1
-            for token in set(
-                query_tokens
-            )
-            if token in text_tokens
-        )
-
-        unique_query_tokens = set(
+        matched = len(
             query_tokens
+            & text_tokens
         )
-
-        if not unique_query_tokens:
-            return 0.0
 
         return min(
             1.0,
             matched
-            / len(
-                unique_query_tokens
-            ),
+            / len(query_tokens),
         )
 
     @classmethod
@@ -306,10 +365,7 @@ class HybridRetriever:
             for token in cls._WORD_RE.findall(
                 normalized
             )
-            if (
-                token
-                not in cls._STOP_WORDS
-            )
+            if token not in cls._STOP_WORDS
         )
 
     @staticmethod
@@ -317,7 +373,7 @@ class HybridRetriever:
         first: tuple[float, ...],
         second: tuple[float, ...],
     ) -> float:
-        """Вычислить cosine similarity и привести к диапазону 0..1."""
+        """Вычислить cosine similarity в диапазоне 0..1."""
         if len(first) != len(second):
             raise ValueError(
                 "Embedding dimensions do not match"

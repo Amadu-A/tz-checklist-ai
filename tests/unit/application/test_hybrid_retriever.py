@@ -5,14 +5,11 @@ from app.domain.retrieval import DocumentChunk
 
 
 class FakeEmbeddingClient:
-    """Детерминированный embedding adapter для unit tests."""
+    """Детерминированный embedding adapter."""
 
     def __init__(
         self,
-        vectors: dict[
-            str,
-            tuple[float, ...],
-        ],
+        vectors: dict[str, tuple[float, ...]],
     ) -> None:
         self._vectors = vectors
 
@@ -23,10 +20,7 @@ class FakeEmbeddingClient:
     async def embed(
         self,
         texts: tuple[str, ...],
-    ) -> tuple[
-        tuple[float, ...],
-        ...,
-    ]:
+    ) -> tuple[tuple[float, ...], ...]:
         self.calls.append(
             texts
         )
@@ -37,170 +31,115 @@ class FakeEmbeddingClient:
         )
 
 
-async def test_hybrid_retriever_returns_relevant_chunk_first() -> None:
-    """Semantic + lexical evidence должны поднять правильный fragment."""
-    query = (
-        "насосная установка пожаротушения"
-    )
-
-    fire_chunk = DocumentChunk(
-        chunk_id="p4-c1",
-        page_number=4,
+async def test_document_embeddings_are_built_only_once() -> None:
+    """Несколько вопросов должны использовать один document index."""
+    first_chunk = DocumentChunk(
+        chunk_id="p1-c1",
+        page_number=1,
         chunk_index=1,
-        text=(
-            "Предусмотрена насосная установка "
-            "пожаротушения с резервным насосом."
-        ),
+        text="Пожарный насос предусмотрен.",
     )
 
-    heat_chunk = DocumentChunk(
-        chunk_id="p8-c1",
-        page_number=8,
+    second_chunk = DocumentChunk(
+        chunk_id="p2-c1",
+        page_number=2,
         chunk_index=1,
-        text=(
-            "Узел учета тепловой энергии "
-            "оборудован тепловычислителем."
-        ),
+        text="Температурный график 95/70.",
     )
 
-    embedding_client = FakeEmbeddingClient(
+    first_query = "Есть пожарный насос?"
+    second_query = "Какой температурный график?"
+
+    client = FakeEmbeddingClient(
         {
-            query: (
-                1.0,
-                0.0,
-            ),
-            fire_chunk.text: (
-                0.95,
-                0.05,
-            ),
-            heat_chunk.text: (
-                0.0,
-                1.0,
-            ),
+            first_chunk.text: (1.0, 0.0),
+            second_chunk.text: (0.0, 1.0),
+            first_query: (1.0, 0.0),
+            second_query: (0.0, 1.0),
         }
     )
 
     retriever = HybridRetriever(
-        embedding_client=embedding_client,
+        embedding_client=client,
         top_k=2,
         batch_size=16,
         semantic_weight=0.65,
         lexical_weight=0.35,
     )
 
-    result = await retriever.retrieve(
-        query,
+    index = await retriever.build_index(
         (
-            heat_chunk,
-            fire_chunk,
-        ),
+            first_chunk,
+            second_chunk,
+        )
     )
 
-    assert (
-        result.hits[0].chunk.chunk_id
-        == "p4-c1"
-    )
-
-    assert (
-        result.hits[0].hybrid_score
-        > result.hits[1].hybrid_score
-    )
-
-
-async def test_semantic_retrieval_handles_paraphrase() -> None:
-    """Embeddings должны спасать вопрос без точного lexical совпадения."""
-    query = (
-        "Предусмотрено ли резервирование насосов?"
-    )
-
-    relevant = DocumentChunk(
-        chunk_id="p3-c2",
-        page_number=3,
-        chunk_index=2,
-        text=(
-            "В составе установки принят один рабочий "
-            "и один резервный агрегат."
-        ),
-    )
-
-    irrelevant = DocumentChunk(
-        chunk_id="p9-c1",
-        page_number=9,
-        chunk_index=1,
-        text=(
-            "Температурный график системы отопления 95/70."
-        ),
-    )
-
-    embedding_client = FakeEmbeddingClient(
-        {
-            query: (
-                1.0,
-                0.0,
-            ),
-            relevant.text: (
-                0.9,
-                0.1,
-            ),
-            irrelevant.text: (
-                0.1,
-                0.9,
-            ),
-        }
-    )
-
-    retriever = HybridRetriever(
-        embedding_client=embedding_client,
-        top_k=1,
-        batch_size=16,
-        semantic_weight=0.8,
-        lexical_weight=0.2,
-    )
-
-    result = await retriever.retrieve(
-        query,
+    results = await retriever.retrieve_many(
         (
-            irrelevant,
-            relevant,
+            first_query,
+            second_query,
         ),
+        index,
     )
 
     assert len(
-        result.hits
-    ) == 1
+        results
+    ) == 2
 
     assert (
-        result.hits[0].chunk
-        == relevant
+        results[0].hits[0].chunk
+        == first_chunk
     )
 
+    assert (
+        results[1].hits[0].chunk
+        == second_chunk
+    )
 
-async def test_empty_document_does_not_call_embedding_model() -> None:
-    """Документ без native chunks не должен расходовать GPU."""
-    embedding_client = FakeEmbeddingClient(
+    assert client.calls == [
+        (
+            first_chunk.text,
+            second_chunk.text,
+        ),
+        (
+            first_query,
+            second_query,
+        ),
+    ]
+
+
+async def test_empty_index_does_not_call_embedding_model() -> None:
+    """Пустой документ не должен расходовать GPU."""
+    client = FakeEmbeddingClient(
         {}
     )
 
     retriever = HybridRetriever(
-        embedding_client=embedding_client,
+        embedding_client=client,
         top_k=5,
         batch_size=16,
         semantic_weight=0.65,
         lexical_weight=0.35,
     )
 
-    result = await retriever.retrieve(
-        "Есть ли насос?",
-        (),
+    index = await retriever.build_index(
+        ()
+    )
+
+    results = await retriever.retrieve_many(
+        (
+            "Есть ли насос?",
+        ),
+        index,
     )
 
     assert (
-        result.hits
+        results[0].hits
         == ()
     )
 
     assert (
-        embedding_client.calls
+        client.calls
         == []
     )
     

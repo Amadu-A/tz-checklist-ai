@@ -9,10 +9,7 @@ from pydantic import (
     SecretStr,
     model_validator,
 )
-from pydantic_settings import (
-    BaseSettings,
-    SettingsConfigDict,
-)
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -33,17 +30,13 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    ollama_base_url: str = (
-        "http://ollama:11434"
-    )
+    ollama_base_url: str = "http://ollama:11434"
 
-    ollama_vlm_model: str = (
-        "qwen3-vl:8b-instruct"
-    )
+    ollama_vlm_model: str = "qwen3-vl:8b-instruct"
 
-    ollama_embedding_model: str = (
-        "qwen3-embedding:4b"
-    )
+    ollama_embedding_model: str = "qwen3-embedding:4b"
+
+    ollama_llm_model: str = "qwen3.8:27b"
 
     ollama_keep_alive: str = "1m"
 
@@ -128,6 +121,18 @@ class Settings(BaseSettings):
         le=1,
     )
 
+    answer_batch_size: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+    )
+
+    answer_found_min_confidence: float = Field(
+        default=0.75,
+        ge=0,
+        le=1,
+    )
+
     pdf_render_dpi: int = Field(
         default=144,
         ge=72,
@@ -148,21 +153,15 @@ class Settings(BaseSettings):
         le=65535,
     )
 
-    rabbitmq_vhost: str = (
-        "tz_checklist_ai"
-    )
+    rabbitmq_vhost: str = "tz_checklist_ai"
 
-    rabbitmq_user: str = (
-        "tz_checklist_ai"
-    )
+    rabbitmq_user: str = "tz_checklist_ai"
 
     rabbitmq_password: SecretStr = SecretStr(
         "change_me_before_use"
     )
 
-    celery_queue_name: str = (
-        "tz-checklist-ai"
-    )
+    celery_queue_name: str = "tz-checklist-ai"
 
     result_file_ttl_minutes: int = Field(
         default=60,
@@ -196,12 +195,8 @@ class Settings(BaseSettings):
         "/data"
     )
 
-    @model_validator(
-        mode="after"
-    )
-    def validate_retrieval_settings(
-        self,
-    ) -> "Settings":
+    @model_validator(mode="after")
+    def validate_retrieval_settings(self) -> "Settings":
         """Проверить согласованность retrieval-конфигурации."""
         if (
             self.retrieval_chunk_overlap_chars
@@ -219,25 +214,21 @@ class Settings(BaseSettings):
             <= 0
         ):
             raise ValueError(
-                "At least one retrieval weight "
-                "must be positive"
+                "At least one retrieval weight must be positive"
             )
 
         return self
 
     @property
-    def rabbitmq_url(
-        self,
-    ) -> str:
-        """Безопасно собрать AMQP URL из отдельных settings."""
+    def rabbitmq_url(self) -> str:
+        """Безопасно собрать AMQP URL."""
         user = quote(
             self.rabbitmq_user,
             safe="",
         )
 
         password = quote(
-            self.rabbitmq_password
-            .get_secret_value(),
+            self.rabbitmq_password.get_secret_value(),
             safe="",
         )
 
@@ -253,20 +244,13 @@ class Settings(BaseSettings):
         )
 
     @property
-    def jobs_dir(
-        self,
-    ) -> Path:
-        """Директория только временных binary-файлов."""
-        return (
-            self.data_dir
-            / "jobs"
-        )
+    def jobs_dir(self) -> Path:
+        """Директория временных binary-файлов."""
+        return self.data_dir / "jobs"
 
     @property
-    def job_database_path(
-        self,
-    ) -> Path:
-        """SQLite содержит только маленькие metadata."""
+    def job_database_path(self) -> Path:
+        """SQLite с техническими metadata."""
         return (
             self.data_dir
             / "metadata"
@@ -276,5 +260,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Вернуть единый кэшированный экземпляр настроек."""
+    """Вернуть единый кэшированный экземпляр."""
     return Settings()
