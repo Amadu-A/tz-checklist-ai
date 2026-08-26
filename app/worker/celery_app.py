@@ -1,7 +1,8 @@
 # app/worker/celery_app.py
 
-from app.core.config import get_settings
 from celery import Celery
+
+from app.core.config import get_settings
 
 
 settings = get_settings()
@@ -20,24 +21,25 @@ celery_app.conf.update(
     ),
 
     # Задача подтверждается только после фактического выполнения.
-    # Если worker аварийно завершится во время обработки,
-    # RabbitMQ сможет вернуть задачу в очередь.
+    # При аварийном завершении worker RabbitMQ сможет
+    # вернуть неподтверждённую задачу в очередь.
     task_acks_late=True,
 
-    # Worker заранее получает только одну задачу.
-    # Это особенно важно для GPU-нагрузки.
+    # Worker заранее забирает только одну задачу.
+    # Это необходимо для последовательной работы с GPU.
     worker_prefetch_multiplier=1,
 
-    # Celery result backend нам не нужен:
-    # состояние задания хранится через JobRepositoryPort.
+    # Celery result backend не используем.
+    # Состояние задания хранится через JobRepositoryPort.
     task_ignore_result=True,
 
-    # После перезапуска RabbitMQ worker должен восстановить соединение.
+    # Worker восстанавливает соединение после перезапуска RabbitMQ.
     broker_connection_retry_on_startup=True,
 
     timezone="UTC",
 
-    # Периодическая страховочная очистка забытых временных файлов.
+    # Периодическая страховочная очистка временных файлов,
+    # которые не были удалены обычным lifecycle.
     beat_schedule={
         "cleanup-expired-jobs": {
             "task": (
