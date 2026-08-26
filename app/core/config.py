@@ -4,8 +4,15 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import (
+    Field,
+    SecretStr,
+    model_validator,
+)
+from pydantic_settings import (
+    BaseSettings,
+    SettingsConfigDict,
+)
 
 
 class Settings(BaseSettings):
@@ -26,7 +33,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    ollama_base_url: str = "http://ollama:11434"
+    ollama_base_url: str = (
+        "http://ollama:11434"
+    )
 
     ollama_vlm_model: str = (
         "qwen3-vl:8b-instruct"
@@ -81,6 +90,42 @@ class Settings(BaseSettings):
         default=2,
         ge=1,
         le=10,
+    )
+
+    retrieval_chunk_max_chars: int = Field(
+        default=1800,
+        ge=300,
+        le=10000,
+    )
+
+    retrieval_chunk_overlap_chars: int = Field(
+        default=300,
+        ge=0,
+        le=5000,
+    )
+
+    retrieval_top_k: int = Field(
+        default=6,
+        ge=1,
+        le=30,
+    )
+
+    retrieval_embedding_batch_size: int = Field(
+        default=16,
+        ge=1,
+        le=128,
+    )
+
+    retrieval_semantic_weight: float = Field(
+        default=0.65,
+        ge=0,
+        le=1,
+    )
+
+    retrieval_lexical_weight: float = Field(
+        default=0.35,
+        ge=0,
+        le=1,
     )
 
     pdf_render_dpi: int = Field(
@@ -150,6 +195,35 @@ class Settings(BaseSettings):
     data_dir: Path = Path(
         "/data"
     )
+
+    @model_validator(
+        mode="after"
+    )
+    def validate_retrieval_settings(
+        self,
+    ) -> "Settings":
+        """Проверить согласованность retrieval-конфигурации."""
+        if (
+            self.retrieval_chunk_overlap_chars
+            >= self.retrieval_chunk_max_chars
+        ):
+            raise ValueError(
+                "RETRIEVAL_CHUNK_OVERLAP_CHARS "
+                "must be smaller than "
+                "RETRIEVAL_CHUNK_MAX_CHARS"
+            )
+
+        if (
+            self.retrieval_semantic_weight
+            + self.retrieval_lexical_weight
+            <= 0
+        ):
+            raise ValueError(
+                "At least one retrieval weight "
+                "must be positive"
+            )
+
+        return self
 
     @property
     def rabbitmq_url(
