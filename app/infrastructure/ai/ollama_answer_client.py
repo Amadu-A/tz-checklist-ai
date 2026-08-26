@@ -5,7 +5,6 @@ import json
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.application.ports.answer_client import AnswerExtractionPort
 from app.domain.answers import (
     AnswerCandidate,
     AnswerStatus,
