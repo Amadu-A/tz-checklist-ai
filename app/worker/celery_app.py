@@ -4,7 +4,6 @@ from celery import Celery
 
 from app.core.config import get_settings
 
-
 settings = get_settings()
 
 celery_app = Celery(
@@ -25,11 +24,11 @@ celery_app.conf.update(
     # вернуть неподтверждённую задачу в очередь.
     task_acks_late=True,
 
-    # Worker заранее забирает только одну задачу.
+    # Worker заранее получает только одну задачу.
     # Это необходимо для последовательной работы с GPU.
     worker_prefetch_multiplier=1,
 
-    # Celery result backend не используем.
+    # Celery result backend не используется.
     # Состояние задания хранится через JobRepositoryPort.
     task_ignore_result=True,
 
@@ -38,8 +37,8 @@ celery_app.conf.update(
 
     timezone="UTC",
 
-    # Периодическая страховочная очистка временных файлов,
-    # которые не были удалены обычным lifecycle.
+    # Celery Beat периодически запускает страховочную очистку
+    # временных пользовательских файлов.
     beat_schedule={
         "cleanup-expired-jobs": {
             "task": (
