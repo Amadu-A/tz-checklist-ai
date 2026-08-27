@@ -227,7 +227,15 @@ async def test_real_vlm_is_used_for_scan_without_text_layer(
                 ),
                 timeout_seconds=(
                     settings
-                    .ollama_request_timeout_seconds
+                    .ollama_vlm_timeout_seconds
+                ),
+                num_ctx=(
+                    settings
+                    .ollama_vlm_num_ctx
+                ),
+                num_predict=(
+                    settings
+                    .ollama_vlm_num_predict
                 ),
             )
         )

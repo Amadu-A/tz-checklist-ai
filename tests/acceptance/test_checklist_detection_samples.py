@@ -93,7 +93,15 @@ def _build_use_case(
             ),
             timeout_seconds=(
                 settings
-                .ollama_request_timeout_seconds
+                .ollama_vlm_timeout_seconds
+            ),
+            num_ctx=(
+                settings
+                .ollama_vlm_num_ctx
+            ),
+            num_predict=(
+                settings
+                .ollama_vlm_num_predict
             ),
         )
     )
@@ -211,4 +219,3 @@ async def test_selects_expected_checklist_for_real_sample(
         f"vision_pages={result.vision_pages}; "
         f"ranking={result.suggestion.ranking}"
     )
-    

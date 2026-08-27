@@ -25,12 +25,22 @@ async def test_real_llm_returns_grounded_answer() -> None:
         base_url=settings.ollama_base_url,
         model=settings.ollama_llm_model,
         keep_alive=settings.ollama_keep_alive,
-        timeout_seconds=settings.ollama_request_timeout_seconds,
+        timeout_seconds=(
+            settings.ollama_answer_timeout_seconds
+        ),
+        num_ctx=(
+            settings.ollama_answer_num_ctx
+        ),
+        num_predict=(
+            settings.ollama_answer_num_predict
+        ),
     )
 
     service = GroundedAnswerService(
         answer_client=client,
-        found_min_confidence=settings.answer_found_min_confidence,
+        found_min_confidence=(
+            settings.answer_found_min_confidence
+        ),
     )
 
     evidence_text = (
@@ -75,4 +85,3 @@ async def test_real_llm_returns_grounded_answer() -> None:
         result[0].source_pages
         == (1,)
     )
-    
