@@ -25,17 +25,26 @@ def test_ollama_model_is_unloaded_after_one_minute_by_default(
     )
 
 
-def test_default_ai_pipeline_uses_single_vlm_model(
+def test_default_ai_pipeline_uses_bounded_vlm_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Text extraction и visual fallback используют одну 8B VLM."""
-    for variable in (
+    """AI requests должны иметь локальные context/output/time limits."""
+    variables = (
         "OLLAMA_LLM_MODEL",
         "OLLAMA_VLM_MODEL",
         "OLLAMA_REQUEST_TIMEOUT_SECONDS",
+        "OLLAMA_ANSWER_TIMEOUT_SECONDS",
+        "OLLAMA_ANSWER_NUM_CTX",
+        "OLLAMA_ANSWER_NUM_PREDICT",
+        "OLLAMA_VLM_TIMEOUT_SECONDS",
+        "OLLAMA_VLM_NUM_CTX",
+        "OLLAMA_VLM_NUM_PREDICT",
+        "ANALYSIS_JOB_TIMEOUT_SECONDS",
         "ANSWER_FOUND_MIN_CONFIDENCE",
         "ANSWER_VLM_FALLBACK_MAX_PAGES",
-    ):
+    )
+
+    for variable in variables:
         monkeypatch.delenv(
             variable,
             raising=False,
@@ -61,6 +70,41 @@ def test_default_ai_pipeline_uses_single_vlm_model(
     )
 
     assert (
+        settings.ollama_answer_timeout_seconds
+        == 120.0
+    )
+
+    assert (
+        settings.ollama_answer_num_ctx
+        == 32768
+    )
+
+    assert (
+        settings.ollama_answer_num_predict
+        == 2048
+    )
+
+    assert (
+        settings.ollama_vlm_timeout_seconds
+        == 180.0
+    )
+
+    assert (
+        settings.ollama_vlm_num_ctx
+        == 32768
+    )
+
+    assert (
+        settings.ollama_vlm_num_predict
+        == 3072
+    )
+
+    assert (
+        settings.analysis_job_timeout_seconds
+        == 900.0
+    )
+
+    assert (
         settings.answer_found_min_confidence
         == 0.60
     )
@@ -69,6 +113,19 @@ def test_default_ai_pipeline_uses_single_vlm_model(
         settings.answer_vlm_fallback_max_pages
         == 4
     )
+
+
+def test_job_timeout_must_exceed_ai_request_timeouts() -> None:
+    """Полный watchdog не может быть короче отдельного AI request."""
+    with pytest.raises(
+        ValidationError
+    ):
+        Settings(
+            _env_file=None,
+            ollama_answer_timeout_seconds=120,
+            ollama_vlm_timeout_seconds=180,
+            analysis_job_timeout_seconds=100,
+        )
 
 
 def test_gpu_tasks_are_serialized(

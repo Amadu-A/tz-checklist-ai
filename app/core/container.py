@@ -127,8 +127,11 @@ def get_container() -> Container:
         model=settings.ollama_vlm_model,
         keep_alive=settings.ollama_keep_alive,
         timeout_seconds=(
-            settings
-            .ollama_request_timeout_seconds
+            settings.ollama_vlm_timeout_seconds
+        ),
+        num_ctx=settings.ollama_vlm_num_ctx,
+        num_predict=(
+            settings.ollama_vlm_num_predict
         ),
     )
 
@@ -147,8 +150,11 @@ def get_container() -> Container:
         model=settings.ollama_llm_model,
         keep_alive=settings.ollama_keep_alive,
         timeout_seconds=(
-            settings
-            .ollama_request_timeout_seconds
+            settings.ollama_answer_timeout_seconds
+        ),
+        num_ctx=settings.ollama_answer_num_ctx,
+        num_predict=(
+            settings.ollama_answer_num_predict
         ),
     )
 
@@ -316,6 +322,9 @@ def get_container() -> Container:
             ),
             result_builder=result_builder,
             result_serializer=result_serializer,
+            job_timeout_seconds=(
+                settings.analysis_job_timeout_seconds
+            ),
         )
     )
 

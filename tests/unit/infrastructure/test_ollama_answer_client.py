@@ -1,8 +1,10 @@
 # tests/unit/infrastructure/test_ollama_answer_client.py
 
+import asyncio
 import json
 
 import httpx
+import pytest
 
 from app.domain.answers import (
     AnswerStatus,
@@ -12,13 +14,39 @@ from app.domain.retrieval import (
     DocumentChunk,
     RetrievalHit,
 )
+from app.infrastructure.ai.errors import (
+    OllamaRequestTimeoutError,
+)
 from app.infrastructure.ai.ollama_answer_client import (
     OllamaAnswerClient,
 )
 
 
-async def test_answer_client_uses_compact_grounded_prompt() -> None:
-    """Extraction prompt должен оставаться коротким и строгим."""
+def _evidence() -> QuestionEvidence:
+    """Создать один grounded evidence item."""
+    return QuestionEvidence(
+        question_id="q1",
+        question_text="Какой расход?",
+        hits=(
+            RetrievalHit(
+                chunk=DocumentChunk(
+                    chunk_id="p1-c1",
+                    page_number=1,
+                    chunk_index=1,
+                    text=(
+                        "Расход составляет 3.93 т/ч."
+                    ),
+                ),
+                lexical_score=1,
+                semantic_score=1,
+                hybrid_score=1,
+            ),
+        ),
+    )
+
+
+async def test_answer_client_uses_bounded_grounded_prompt() -> None:
+    """Extraction request должен иметь context/output limits."""
 
     async def handler(
         request: httpx.Request,
@@ -47,6 +75,16 @@ async def test_answer_client_uses_compact_grounded_prompt() -> None:
             == 0
         )
 
+        assert (
+            payload["options"]["num_ctx"]
+            == 32768
+        )
+
+        assert (
+            payload["options"]["num_predict"]
+            == 2048
+        )
+
         system_prompt = (
             payload[
                 "messages"
@@ -68,8 +106,6 @@ async def test_answer_client_uses_compact_grounded_prompt() -> None:
             in system_prompt
         )
 
-        # Защита от повторного превращения extraction prompt
-        # в длинную экспертную инструкцию.
         assert (
             len(system_prompt)
             < 1800
@@ -106,34 +142,16 @@ async def test_answer_client_uses_compact_grounded_prompt() -> None:
         model="qwen3.8:27b",
         keep_alive="1m",
         timeout_seconds=30,
+        num_ctx=32768,
+        num_predict=2048,
         transport=httpx.MockTransport(
             handler
         ),
     )
 
-    evidence = QuestionEvidence(
-        question_id="q1",
-        question_text="Какой расход?",
-        hits=(
-            RetrievalHit(
-                chunk=DocumentChunk(
-                    chunk_id="p1-c1",
-                    page_number=1,
-                    chunk_index=1,
-                    text=(
-                        "Расход составляет 3.93 т/ч."
-                    ),
-                ),
-                lexical_score=1,
-                semantic_score=1,
-                hybrid_score=1,
-            ),
-        ),
-    )
-
     result = await client.extract(
         (
-            evidence,
+            _evidence(),
         )
     )
 
@@ -141,3 +159,43 @@ async def test_answer_client_uses_compact_grounded_prompt() -> None:
         result[0].status
         == AnswerStatus.FOUND
     )
+
+
+async def test_answer_client_stops_hung_request() -> None:
+    """Один зависший text request должен завершиться по watchdog."""
+
+    async def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        del request
+
+        await asyncio.sleep(
+            0.05
+        )
+
+        return httpx.Response(
+            200,
+            json={},
+        )
+
+    client = OllamaAnswerClient(
+        base_url="http://ollama:11434",
+        model="qwen3-vl:8b-instruct",
+        keep_alive="1m",
+        timeout_seconds=0.01,
+        num_ctx=32768,
+        num_predict=2048,
+        transport=httpx.MockTransport(
+            handler
+        ),
+    )
+
+    with pytest.raises(
+        OllamaRequestTimeoutError,
+        match="grounded-answer request exceeded",
+    ):
+        await client.extract(
+            (
+                _evidence(),
+            )
+        )

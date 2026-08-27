@@ -1,5 +1,6 @@
 # app/application/services/analysis_pipeline_service.py
 
+import asyncio
 from time import perf_counter
 from uuid import UUID
 
@@ -38,13 +39,12 @@ class AnalysisPipelineService:
         result.json
             -> временно хранится до action=result либо TTL
 
-    failure:
+    failure/timeout:
 
-        все temporary artifacts удаляются
+        temporary artifacts удаляются;
+        metadata переводится в FAILED.
 
     PDF report generation сейчас отключён.
-    ReportLab implementation остаётся в проекте и может быть
-    повторно подключён позже.
     """
 
     def __init__(
@@ -59,7 +59,13 @@ class AnalysisPipelineService:
         visual_fallback_service: VisualAnswerFallbackService,
         result_builder: ChecklistResultBuilder,
         result_serializer: ChecklistResultSerializerPort,
+        job_timeout_seconds: float,
     ) -> None:
+        if job_timeout_seconds <= 0:
+            raise ValueError(
+                "job_timeout_seconds must be positive"
+            )
+
         self._repository = repository
         self._storage = storage
         self._checklist_repository = (
@@ -76,6 +82,10 @@ class AnalysisPipelineService:
         self._result_builder = result_builder
         self._result_serializer = (
             result_serializer
+        )
+
+        self._job_timeout_seconds = (
+            job_timeout_seconds
         )
 
     async def process(
@@ -113,117 +123,165 @@ class AnalysisPipelineService:
         processing_started = perf_counter()
 
         try:
-            pdf_path = self._storage.input_path(
-                job_id
-            )
-
-            source_filename = (
-                self._storage
-                .source_filename(
-                    job_id
+            async with asyncio.timeout(
+                self._job_timeout_seconds
+            ):
+                await self._process_started_job(
+                    job_id=job_id,
+                    checklist_code=checklist_code,
+                    processing_started=processing_started,
                 )
+
+        except TimeoutError as exc:
+            timeout_error = RuntimeError(
+                "Analysis exceeded "
+                f"{self._job_timeout_seconds:g} seconds"
             )
 
-            checklist = (
-                self._checklist_repository
-                .get(
-                    checklist_code
-                )
-            )
-
-            native_context = (
-                self._content_service
-                .extract_native(
-                    pdf_path
-                )
-            )
-
-            chunks = self._chunker.chunk(
-                native_context
-            )
-
-            search_started = perf_counter()
-
-            native_analysis = (
-                await self._answering_service.analyze(
-                    checklist=checklist,
-                    chunks=chunks,
-                )
-            )
-
-            final_analysis = (
-                await self._visual_fallback_service.enrich(
-                    pdf_path=pdf_path,
-                    checklist=checklist,
-                    native_context=native_context,
-                    analysis=native_analysis,
-                )
-            )
-
-            search_seconds = (
-                perf_counter()
-                - search_started
-            )
-
-            processing_seconds = (
-                perf_counter()
-                - processing_started
-            )
-
-            result = self._result_builder.build(
-                request_id=job_id,
-                source_filename=source_filename,
-                checklist=checklist,
-                analysis=final_analysis,
-                processing_seconds=processing_seconds,
-                search_seconds=search_seconds,
-            )
-
-            result_bytes = (
-                self._result_serializer
-                .serialize(
-                    result
-                )
-            )
-
-            self._storage.save_result(
-                job_id,
-                result_bytes,
-            )
-
-            self._repository.update(
-                job_id,
-                status=JobStatus.COMPLETED,
+            self._mark_failed(
+                job_id=job_id,
                 checklist_code=checklist_code,
+                exc=timeout_error,
             )
+
+            raise timeout_error from exc
 
         except Exception as exc:
-            self._storage.delete_job_files(
-                job_id
+            self._mark_failed(
+                job_id=job_id,
+                checklist_code=checklist_code,
+                exc=exc,
             )
-
-            if (
-                self._repository.get(
-                    job_id
-                )
-                is not None
-            ):
-                self._repository.update(
-                    job_id,
-                    status=JobStatus.FAILED,
-                    checklist_code=checklist_code,
-                    error=self._safe_error(
-                        exc
-                    ),
-                )
 
             raise
 
         finally:
             # После success остаётся только result.json.
+            # После failure каталог уже удалён через _mark_failed().
             self._storage.delete_input(
                 job_id
             )
+
+    async def _process_started_job(
+        self,
+        *,
+        job_id: UUID,
+        checklist_code: ChecklistCode,
+        processing_started: float,
+    ) -> None:
+        """Выполнить pipeline внутри общего wall-clock watchdog."""
+        pdf_path = self._storage.input_path(
+            job_id
+        )
+
+        source_filename = (
+            self._storage
+            .source_filename(
+                job_id
+            )
+        )
+
+        checklist = (
+            self._checklist_repository
+            .get(
+                checklist_code
+            )
+        )
+
+        native_context = (
+            self._content_service
+            .extract_native(
+                pdf_path
+            )
+        )
+
+        chunks = self._chunker.chunk(
+            native_context
+        )
+
+        search_started = perf_counter()
+
+        native_analysis = (
+            await self._answering_service.analyze(
+                checklist=checklist,
+                chunks=chunks,
+            )
+        )
+
+        final_analysis = (
+            await self._visual_fallback_service.enrich(
+                pdf_path=pdf_path,
+                checklist=checklist,
+                native_context=native_context,
+                analysis=native_analysis,
+            )
+        )
+
+        search_seconds = (
+            perf_counter()
+            - search_started
+        )
+
+        processing_seconds = (
+            perf_counter()
+            - processing_started
+        )
+
+        result = self._result_builder.build(
+            request_id=job_id,
+            source_filename=source_filename,
+            checklist=checklist,
+            analysis=final_analysis,
+            processing_seconds=processing_seconds,
+            search_seconds=search_seconds,
+        )
+
+        result_bytes = (
+            self._result_serializer
+            .serialize(
+                result
+            )
+        )
+
+        self._storage.save_result(
+            job_id,
+            result_bytes,
+        )
+
+        self._repository.update(
+            job_id,
+            status=JobStatus.COMPLETED,
+            checklist_code=checklist_code,
+        )
+
+    def _mark_failed(
+        self,
+        *,
+        job_id: UUID,
+        checklist_code: ChecklistCode,
+        exc: Exception,
+    ) -> None:
+        """Очистить binary artifacts и сохранить безопасный FAILED state."""
+        self._storage.delete_job_files(
+            job_id
+        )
+
+        if (
+            self._repository.get(
+                job_id
+            )
+            is None
+        ):
+            return
+
+        self._repository.update(
+            job_id,
+            status=JobStatus.FAILED,
+            checklist_code=checklist_code,
+            error=self._safe_error(
+                exc
+            ),
+        )
 
     @staticmethod
     def _safe_error(

@@ -1,5 +1,6 @@
 # app/infrastructure/ai/ollama_answer_client.py
 
+import asyncio
 import json
 
 import httpx
@@ -9,6 +10,9 @@ from app.domain.answers import (
     AnswerCandidate,
     AnswerStatus,
     QuestionEvidence,
+)
+from app.infrastructure.ai.errors import (
+    OllamaRequestTimeoutError,
 )
 
 
@@ -97,8 +101,30 @@ class OllamaAnswerClient:
         model: str,
         keep_alive: str,
         timeout_seconds: float,
+        num_ctx: int,
+        num_predict: int,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError(
+                "timeout_seconds must be positive"
+            )
+
+        if num_ctx <= 0:
+            raise ValueError(
+                "num_ctx must be positive"
+            )
+
+        if num_predict <= 0:
+            raise ValueError(
+                "num_predict must be positive"
+            )
+
+        if num_predict >= num_ctx:
+            raise ValueError(
+                "num_predict must be smaller than num_ctx"
+            )
+
         self._base_url = (
             base_url.rstrip("/")
         )
@@ -108,6 +134,9 @@ class OllamaAnswerClient:
         self._timeout_seconds = (
             timeout_seconds
         )
+
+        self._num_ctx = num_ctx
+        self._num_predict = num_predict
 
         self._transport = transport
 
@@ -145,6 +174,8 @@ class OllamaAnswerClient:
             ),
             "options": {
                 "temperature": 0,
+                "num_ctx": self._num_ctx,
+                "num_predict": self._num_predict,
             },
             "messages": [
                 {
@@ -161,17 +192,30 @@ class OllamaAnswerClient:
             ],
         }
 
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=self._timeout_seconds,
-            transport=self._transport,
-        ) as client:
-            response = await client.post(
-                "/api/chat",
-                json=request_payload,
-            )
+        try:
+            async with asyncio.timeout(
+                self._timeout_seconds
+            ):
+                async with httpx.AsyncClient(
+                    base_url=self._base_url,
+                    timeout=self._timeout_seconds,
+                    transport=self._transport,
+                ) as client:
+                    response = await client.post(
+                        "/api/chat",
+                        json=request_payload,
+                    )
 
-            response.raise_for_status()
+                    response.raise_for_status()
+
+        except (
+            TimeoutError,
+            httpx.TimeoutException,
+        ) as exc:
+            raise OllamaRequestTimeoutError(
+                "Ollama grounded-answer request exceeded "
+                f"{self._timeout_seconds:g} seconds"
+            ) from exc
 
         ollama_response = (
             _OllamaChatResponse

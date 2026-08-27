@@ -1,5 +1,6 @@
 # app/infrastructure/ai/ollama_vlm_client.py
 
+import asyncio
 import base64
 
 import httpx
@@ -13,9 +14,14 @@ from app.domain.documents import (
     PageVisionResult,
     PdfPageImage,
 )
+from app.infrastructure.ai.errors import (
+    OllamaRequestTimeoutError,
+)
 
 
-class _StrictModel(BaseModel):
+class _StrictModel(
+    BaseModel
+):
     """Строгая Pydantic-модель результата, который мы требуем от VLM."""
 
     model_config = ConfigDict(
@@ -94,11 +100,33 @@ class OllamaVlmClient:
         model: str,
         keep_alive: str,
         timeout_seconds: float,
+        num_ctx: int,
+        num_predict: int,
         transport: (
             httpx.AsyncBaseTransport
             | None
         ) = None,
     ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError(
+                "timeout_seconds must be positive"
+            )
+
+        if num_ctx <= 0:
+            raise ValueError(
+                "num_ctx must be positive"
+            )
+
+        if num_predict <= 0:
+            raise ValueError(
+                "num_predict must be positive"
+            )
+
+        if num_predict >= num_ctx:
+            raise ValueError(
+                "num_predict must be smaller than num_ctx"
+            )
+
         self._base_url = (
             base_url.rstrip("/")
         )
@@ -113,7 +141,9 @@ class OllamaVlmClient:
             timeout_seconds
         )
 
-        # Transport внедряется только для удобного unit-testing.
+        self._num_ctx = num_ctx
+        self._num_predict = num_predict
+
         self._transport = transport
 
     async def analyze_page(
@@ -130,23 +160,19 @@ class OllamaVlmClient:
         payload = {
             "model": self._model,
             "stream": False,
-
-            # Важное требование для VRAM.
+            "think": False,
             "keep_alive": (
                 self._keep_alive
             ),
-
-            # Ollama получает JSON Schema,
-            # созданную Pydantic.
             "format": (
                 _VlmPagePayload
                 .model_json_schema()
             ),
-
             "options": {
                 "temperature": 0,
+                "num_ctx": self._num_ctx,
+                "num_predict": self._num_predict,
             },
-
             "messages": [
                 {
                     "role": "system",
@@ -167,19 +193,32 @@ class OllamaVlmClient:
             ],
         }
 
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=(
+        try:
+            async with asyncio.timeout(
                 self._timeout_seconds
-            ),
-            transport=self._transport,
-        ) as client:
-            response = await client.post(
-                "/api/chat",
-                json=payload,
-            )
+            ):
+                async with httpx.AsyncClient(
+                    base_url=self._base_url,
+                    timeout=(
+                        self._timeout_seconds
+                    ),
+                    transport=self._transport,
+                ) as client:
+                    response = await client.post(
+                        "/api/chat",
+                        json=payload,
+                    )
 
-            response.raise_for_status()
+                    response.raise_for_status()
+
+        except (
+            TimeoutError,
+            httpx.TimeoutException,
+        ) as exc:
+            raise OllamaRequestTimeoutError(
+                "Ollama VLM page request exceeded "
+                f"{self._timeout_seconds:g} seconds"
+            ) from exc
 
         ollama_response = (
             _OllamaChatResponse

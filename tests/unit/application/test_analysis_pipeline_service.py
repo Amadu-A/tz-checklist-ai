@@ -1,5 +1,6 @@
 # tests/unit/application/test_analysis_pipeline_service.py
 
+import asyncio
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -155,6 +156,26 @@ class FakeAnsweringService:
         )
 
 
+class SlowAnsweringService:
+    async def analyze(
+        self,
+        *,
+        checklist,
+        chunks,
+    ) -> ChecklistAnalysisResult:
+        del checklist
+        del chunks
+
+        await asyncio.sleep(
+            0.05
+        )
+
+        return ChecklistAnalysisResult(
+            checklist_code=ChecklistCode.UUTE,
+            answers=(),
+        )
+
+
 class FakeVisualFallback:
     async def enrich(
         self,
@@ -191,6 +212,53 @@ def _result_builder() -> ChecklistResultBuilder:
     )
 
 
+def _create_job(
+    *,
+    repository: SqliteJobRepository,
+    storage: EphemeralFileStorage,
+    source_filename: str,
+):
+    job_id = uuid4()
+
+    repository.create(
+        job_id,
+        status=JobStatus.QUEUED,
+        checklist_code=ChecklistCode.UUTE,
+    )
+
+    storage.save_input(
+        job_id,
+        b"%PDF-user-input",
+        source_filename=source_filename,
+    )
+
+    return job_id
+
+
+def _service(
+    *,
+    repository: SqliteJobRepository,
+    storage: EphemeralFileStorage,
+    answering_service,
+    result_serializer,
+    job_timeout_seconds: float,
+) -> AnalysisPipelineService:
+    return AnalysisPipelineService(
+        repository=repository,
+        storage=storage,
+        checklist_repository=(
+            FakeChecklistRepository()
+        ),
+        content_service=FakeContentService(),
+        chunker=FakeChunker(),
+        answering_service=answering_service,
+        visual_fallback_service=FakeVisualFallback(),
+        result_builder=_result_builder(),
+        result_serializer=result_serializer,
+        job_timeout_seconds=job_timeout_seconds,
+    )
+
+
 async def test_success_deletes_input_and_keeps_json_until_delivery(
     tmp_path: Path,
 ) -> None:
@@ -206,34 +274,20 @@ async def test_success_deletes_input_and_keeps_json_until_delivery(
         / "jobs"
     )
 
-    job_id = uuid4()
-
-    repository.create(
-        job_id,
-        status=JobStatus.QUEUED,
-        checklist_code=ChecklistCode.UUTE,
-    )
-
-    storage.save_input(
-        job_id,
-        b"%PDF-user-input",
+    job_id = _create_job(
+        repository=repository,
+        storage=storage,
         source_filename="ТЗ УУТЭ.pdf",
     )
 
-    service = AnalysisPipelineService(
+    service = _service(
         repository=repository,
         storage=storage,
-        checklist_repository=(
-            FakeChecklistRepository()
-        ),
-        content_service=FakeContentService(),
-        chunker=FakeChunker(),
         answering_service=FakeAnsweringService(),
-        visual_fallback_service=FakeVisualFallback(),
-        result_builder=_result_builder(),
         result_serializer=(
             JsonChecklistResultSerializer()
         ),
+        job_timeout_seconds=30,
     )
 
     await service.process(
@@ -316,32 +370,18 @@ async def test_failure_removes_all_temporary_files(
         / "jobs"
     )
 
-    job_id = uuid4()
-
-    repository.create(
-        job_id,
-        status=JobStatus.QUEUED,
-        checklist_code=ChecklistCode.UUTE,
-    )
-
-    storage.save_input(
-        job_id,
-        b"%PDF-user-input",
+    job_id = _create_job(
+        repository=repository,
+        storage=storage,
         source_filename="ТЗ.pdf",
     )
 
-    service = AnalysisPipelineService(
+    service = _service(
         repository=repository,
         storage=storage,
-        checklist_repository=(
-            FakeChecklistRepository()
-        ),
-        content_service=FakeContentService(),
-        chunker=FakeChunker(),
         answering_service=FakeAnsweringService(),
-        visual_fallback_service=FakeVisualFallback(),
-        result_builder=_result_builder(),
         result_serializer=FailingSerializer(),
+        job_timeout_seconds=30,
     )
 
     with pytest.raises(
@@ -362,6 +402,80 @@ async def test_failure_removes_all_temporary_files(
     assert (
         state.status
         == JobStatus.FAILED
+    )
+
+    assert (
+        storage.has_input(
+            job_id
+        )
+        is False
+    )
+
+    assert (
+        storage.has_result(
+            job_id
+        )
+        is False
+    )
+
+
+async def test_job_watchdog_marks_failed_and_cleans_files(
+    tmp_path: Path,
+) -> None:
+    """Полный analysis job не должен выполняться бесконечно."""
+    repository = SqliteJobRepository(
+        tmp_path
+        / "metadata"
+        / "jobs.sqlite3"
+    )
+
+    storage = EphemeralFileStorage(
+        tmp_path
+        / "jobs"
+    )
+
+    job_id = _create_job(
+        repository=repository,
+        storage=storage,
+        source_filename="slow.pdf",
+    )
+
+    service = _service(
+        repository=repository,
+        storage=storage,
+        answering_service=SlowAnsweringService(),
+        result_serializer=(
+            JsonChecklistResultSerializer()
+        ),
+        job_timeout_seconds=0.01,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Analysis exceeded 0.01 seconds",
+    ):
+        await service.process(
+            job_id=job_id,
+            checklist_code=ChecklistCode.UUTE,
+        )
+
+    state = repository.get(
+        job_id
+    )
+
+    assert state is not None
+
+    assert (
+        state.status
+        == JobStatus.FAILED
+    )
+
+    assert (
+        state.error
+        == (
+            "RuntimeError: "
+            "Analysis exceeded 0.01 seconds"
+        )
     )
 
     assert (

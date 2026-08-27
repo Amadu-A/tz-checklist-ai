@@ -46,9 +46,55 @@ class Settings(BaseSettings):
 
     ollama_keep_alive: str = "1m"
 
+    # Общий timeout остаётся для embedding/readiness adapters.
     ollama_request_timeout_seconds: float = Field(
         default=300.0,
         gt=0,
+    )
+
+    # Grounded text extraction.
+    ollama_answer_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        le=600,
+    )
+
+    ollama_answer_num_ctx: int = Field(
+        default=32768,
+        ge=4096,
+        le=131072,
+    )
+
+    ollama_answer_num_predict: int = Field(
+        default=2048,
+        ge=64,
+        le=8192,
+    )
+
+    # Targeted visual fallback.
+    ollama_vlm_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        le=600,
+    )
+
+    ollama_vlm_num_ctx: int = Field(
+        default=32768,
+        ge=4096,
+        le=131072,
+    )
+
+    ollama_vlm_num_predict: int = Field(
+        default=3072,
+        ge=64,
+        le=8192,
+    )
+
+    # Верхняя граница wall-clock времени одного background job.
+    analysis_job_timeout_seconds: float = Field(
+        default=900.0,
+        ge=60,
+        le=7200,
     )
 
     gpu_task_concurrency: int = Field(
@@ -215,7 +261,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_retrieval_settings(self) -> "Settings":
-        """Проверить согласованность retrieval-конфигурации."""
+        """Проверить взаимосвязанные настройки приложения."""
         if (
             self.retrieval_chunk_overlap_chars
             >= self.retrieval_chunk_max_chars
@@ -233,6 +279,41 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "At least one retrieval weight must be positive"
+            )
+
+        if (
+            self.ollama_answer_num_predict
+            >= self.ollama_answer_num_ctx
+        ):
+            raise ValueError(
+                "OLLAMA_ANSWER_NUM_PREDICT "
+                "must be smaller than "
+                "OLLAMA_ANSWER_NUM_CTX"
+            )
+
+        if (
+            self.ollama_vlm_num_predict
+            >= self.ollama_vlm_num_ctx
+        ):
+            raise ValueError(
+                "OLLAMA_VLM_NUM_PREDICT "
+                "must be smaller than "
+                "OLLAMA_VLM_NUM_CTX"
+            )
+
+        max_ai_request_timeout = max(
+            self.ollama_answer_timeout_seconds,
+            self.ollama_vlm_timeout_seconds,
+        )
+
+        if (
+            self.analysis_job_timeout_seconds
+            <= max_ai_request_timeout
+        ):
+            raise ValueError(
+                "ANALYSIS_JOB_TIMEOUT_SECONDS "
+                "must be greater than individual "
+                "Ollama request timeouts"
             )
 
         return self
