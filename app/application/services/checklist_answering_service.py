@@ -61,30 +61,26 @@ class ChecklistAnsweringService:
 
     _OBJECT_NAME_PATTERNS = (
         re.compile(
-            (
-                r"(?im)"
-                r"^[ \t]*"
-                r"наименование[ \t]+"
-                r"(?:проектируемого[ \t]+)?"
-                r"объекта"
-                r"[ \t]*"
-                r"[:\-–—]"
-                r"[ \t]*"
-                r"(?:\r?\n[ \t]*)?"
-                r"(?P<value>[^\r\n]+)"
-            )
+            r"(?im)"
+            r"^[ \t]*"
+            r"наименование[ \t]+"
+            r"(?:проектируемого[ \t]+)?"
+            r"объекта"
+            r"[ \t]*"
+            r"[:\-–—]"
+            r"[ \t]*"
+            r"(?:\r?\n[ \t]*)?"
+            r"(?P<value>[^\r\n]+)"
         ),
         re.compile(
-            (
-                r"(?im)"
-                r"^[ \t]*"
-                r"абонент"
-                r"[ \t]*"
-                r"[:\-–—]"
-                r"[ \t]*"
-                r"(?:\r?\n[ \t]*)?"
-                r"(?P<value>[^\r\n]+)"
-            )
+            r"(?im)"
+            r"^[ \t]*"
+            r"абонент"
+            r"[ \t]*"
+            r"[:\-–—]"
+            r"[ \t]*"
+            r"(?:\r?\n[ \t]*)?"
+            r"(?P<value>[^\r\n]+)"
         ),
     )
 
@@ -178,11 +174,7 @@ class ChecklistAnsweringService:
             unresolved_evidence.append(
                 QuestionEvidence(
                     question_id=question.id,
-
-                    # Section/label помогают понять смысл вопроса,
-                    # но ответ по-прежнему разрешён только из hits.
                     question_text=question_context,
-
                     hits=retrieval.hits,
                 )
             )
