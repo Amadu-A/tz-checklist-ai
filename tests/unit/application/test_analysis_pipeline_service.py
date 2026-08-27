@@ -1,5 +1,6 @@
 # tests/unit/application/test_analysis_pipeline_service.py
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,6 +8,12 @@ import pytest
 
 from app.application.services.analysis_pipeline_service import (
     AnalysisPipelineService,
+)
+from app.application.services.answer_dimension_validator import (
+    AnswerDimensionValidator,
+)
+from app.application.services.checklist_result_builder import (
+    ChecklistResultBuilder,
 )
 from app.domain.answers import (
     AnswerStatus,
@@ -30,6 +37,9 @@ from app.domain.enums import (
 from app.infrastructure.persistence.sqlite_job_repository import (
     SqliteJobRepository,
 )
+from app.infrastructure.reporting.json_checklist_result_serializer import (
+    JsonChecklistResultSerializer,
+)
 from app.infrastructure.storage.ephemeral_file_storage import (
     EphemeralFileStorage,
 )
@@ -39,7 +49,10 @@ def _checklist() -> ChecklistDefinition:
     return ChecklistDefinition(
         code=ChecklistCode.UUTE,
         title="УУТЭ",
-        description="Тест",
+        description=(
+            "Узел учета тепловой энергии "
+            "и теплоносителя."
+        ),
         source_workbook="test.xlsx",
         expected_question_count=1,
         sheets=(
@@ -54,7 +67,10 @@ def _checklist() -> ChecklistDefinition:
                             ChecklistQuestion(
                                 id="q1",
                                 source_number="1",
-                                text="Какой расход?",
+                                text=(
+                                    "Какой расход "
+                                    "теплоносителя?"
+                                ),
                                 output_order=1,
                             ),
                         ),
@@ -70,7 +86,10 @@ class FakeChecklistRepository:
         self,
         code: ChecklistCode,
     ) -> ChecklistDefinition:
-        assert code == ChecklistCode.UUTE
+        assert (
+            code
+            == ChecklistCode.UUTE
+        )
 
         return _checklist()
 
@@ -89,7 +108,10 @@ class FakeContentService:
             pages=(
                 PdfPageText(
                     page_number=1,
-                    text="Расход составляет 3.93 т/ч.",
+                    text=(
+                        "Расход составляет "
+                        "3.93 т/ч."
+                    ),
                 ),
             )
         )
@@ -125,7 +147,8 @@ class FakeAnsweringService:
                     confidence=0.95,
                     source_pages=(1,),
                     supporting_text=(
-                        "Расход составляет 3.93 т/ч."
+                        "Расход составляет "
+                        "3.93 т/ч."
                     ),
                 ),
             ),
@@ -148,35 +171,30 @@ class FakeVisualFallback:
         return analysis
 
 
-class FakeRenderer:
-    def __init__(
+class FailingSerializer:
+    def serialize(
         self,
-        *,
-        fail: bool = False,
-    ) -> None:
-        self._fail = fail
-
-    def render(
-        self,
-        *,
-        checklist,
-        analysis,
+        result,
     ) -> bytes:
-        del checklist
-        del analysis
+        del result
 
-        if self._fail:
-            raise RuntimeError(
-                "render failed"
-            )
-
-        return b"%PDF-generated-report"
+        raise RuntimeError(
+            "serialize failed"
+        )
 
 
-async def test_success_deletes_input_but_keeps_result_until_delivery(
+def _result_builder() -> ChecklistResultBuilder:
+    return ChecklistResultBuilder(
+        dimension_validator=(
+            AnswerDimensionValidator()
+        )
+    )
+
+
+async def test_success_deletes_input_and_keeps_json_until_delivery(
     tmp_path: Path,
 ) -> None:
-    """После worker исходный ТЗ должен исчезнуть."""
+    """Worker удаляет PDF, но оставляет temporary result.json."""
     repository = SqliteJobRepository(
         tmp_path
         / "metadata"
@@ -199,17 +217,23 @@ async def test_success_deletes_input_but_keeps_result_until_delivery(
     storage.save_input(
         job_id,
         b"%PDF-user-input",
+        source_filename="ТЗ УУТЭ.pdf",
     )
 
     service = AnalysisPipelineService(
         repository=repository,
         storage=storage,
-        checklist_repository=FakeChecklistRepository(),
+        checklist_repository=(
+            FakeChecklistRepository()
+        ),
         content_service=FakeContentService(),
         chunker=FakeChunker(),
         answering_service=FakeAnsweringService(),
         visual_fallback_service=FakeVisualFallback(),
-        report_renderer=FakeRenderer(),
+        result_builder=_result_builder(),
+        result_serializer=(
+            JsonChecklistResultSerializer()
+        ),
     )
 
     await service.process(
@@ -242,13 +266,31 @@ async def test_success_deletes_input_but_keeps_result_until_delivery(
         is True
     )
 
-    result = storage.consume_result(
-        job_id
+    payload = json.loads(
+        storage.consume_result(
+            job_id
+        )
     )
 
     assert (
-        result
-        == b"%PDF-generated-report"
+        payload["metadata"][
+            "source_filename"
+        ]
+        == "ТЗ УУТЭ.pdf"
+    )
+
+    assert (
+        payload["metadata"][
+            "checklist_tag"
+        ]
+        == "УУТЭ"
+    )
+
+    assert (
+        payload["questions"][0][
+            "answer"
+        ]
+        == "3.93 т/ч"
     )
 
     assert (
@@ -259,10 +301,10 @@ async def test_success_deletes_input_but_keeps_result_until_delivery(
     )
 
 
-async def test_failure_removes_all_user_binary_files(
+async def test_failure_removes_all_temporary_files(
     tmp_path: Path,
 ) -> None:
-    """При ошибке на сервере не должен остаться ни input, ни result."""
+    """Ошибка сериализации удаляет input/result artifacts."""
     repository = SqliteJobRepository(
         tmp_path
         / "metadata"
@@ -285,24 +327,26 @@ async def test_failure_removes_all_user_binary_files(
     storage.save_input(
         job_id,
         b"%PDF-user-input",
+        source_filename="ТЗ.pdf",
     )
 
     service = AnalysisPipelineService(
         repository=repository,
         storage=storage,
-        checklist_repository=FakeChecklistRepository(),
+        checklist_repository=(
+            FakeChecklistRepository()
+        ),
         content_service=FakeContentService(),
         chunker=FakeChunker(),
         answering_service=FakeAnsweringService(),
         visual_fallback_service=FakeVisualFallback(),
-        report_renderer=FakeRenderer(
-            fail=True
-        ),
+        result_builder=_result_builder(),
+        result_serializer=FailingSerializer(),
     )
 
     with pytest.raises(
         RuntimeError,
-        match="render failed",
+        match="serialize failed",
     ):
         await service.process(
             job_id=job_id,

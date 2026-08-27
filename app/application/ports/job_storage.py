@@ -7,20 +7,25 @@ from uuid import UUID
 
 
 class JobStoragePort(Protocol):
-    """Порт временного хранения пользовательских binary-файлов.
+    """Порт временного хранения пользовательских artifacts.
 
-    Все файлы в этом storage являются временными.
+    В storage могут существовать только:
 
-    Backend никогда не должен использовать это хранилище
-    как архив пользовательской документации.
+        input.pdf
+        source_filename.txt
+        result.json
+
+    Все они временные.
     """
 
     def save_input(
         self,
         job_id: UUID,
         pdf_bytes: bytes,
+        *,
+        source_filename: str = "document.pdf",
     ) -> Path:
-        """Временно сохранить исходный PDF."""
+        """Временно сохранить исходный PDF и его имя."""
         ...
 
     def input_path(
@@ -30,33 +35,40 @@ class JobStoragePort(Protocol):
         """Получить путь к временному входному PDF."""
         ...
 
+    def source_filename(
+        self,
+        job_id: UUID,
+    ) -> str:
+        """Получить исходное имя пользовательского файла."""
+        ...
+
     def delete_input(
         self,
         job_id: UUID,
     ) -> None:
-        """Удалить исходный пользовательский PDF."""
+        """Удалить исходный PDF и временное имя файла."""
         ...
 
     def save_result(
         self,
         job_id: UUID,
-        pdf_bytes: bytes,
+        result_bytes: bytes,
     ) -> Path:
-        """Временно сохранить сформированный PDF-отчёт."""
+        """Временно сохранить JSON-результат."""
         ...
 
     def consume_result(
         self,
         job_id: UUID,
     ) -> bytes:
-        """Прочитать результат и сразу удалить серверную копию."""
+        """Прочитать JSON и сразу удалить серверную копию."""
         ...
 
     def delete_job_files(
         self,
         job_id: UUID,
     ) -> None:
-        """Удалить все binary-файлы задания."""
+        """Удалить все temporary artifacts задания."""
         ...
 
     def cleanup_orphaned_files(
@@ -79,5 +91,5 @@ class JobStoragePort(Protocol):
         self,
         job_id: UUID,
     ) -> bool:
-        """Проверить наличие результирующего PDF."""
+        """Проверить наличие JSON-результата."""
         ...

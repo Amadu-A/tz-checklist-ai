@@ -12,19 +12,15 @@ class EphemeralFileStorage:
     Layout:
 
         /data/jobs/<uuid>/input.pdf
-        /data/jobs/<uuid>/result.pdf
+        /data/jobs/<uuid>/source_filename.txt
+        /data/jobs/<uuid>/result.json
 
-    Никакие intermediate text/chunks/embeddings сюда не записываются.
-
-    Нормальный lifecycle удаляет файлы максимально рано.
-
-    cleanup_orphaned_files() является defense-in-depth и удаляет
-    старые filesystem artifacts, которые могли остаться после
-    аварийного завершения процесса вне нормального lifecycle.
+    Native text, chunks и embeddings сюда не записываются.
     """
 
     INPUT_FILENAME = "input.pdf"
-    RESULT_FILENAME = "result.pdf"
+    SOURCE_FILENAME = "source_filename.txt"
+    RESULT_FILENAME = "result.json"
 
     def __init__(
         self,
@@ -41,24 +37,49 @@ class EphemeralFileStorage:
         self,
         job_id: UUID,
         pdf_bytes: bytes,
+        *,
+        source_filename: str = "document.pdf",
     ) -> Path:
-        """Атомарно сохранить временный входной PDF."""
+        """Атомарно сохранить PDF и temporary filename metadata."""
         if not pdf_bytes:
             raise ValueError(
                 "Input PDF cannot be empty"
             )
 
-        target = (
-            self._job_dir(
-                job_id
-            )
+        job_dir = self._job_dir(
+            job_id
+        )
+
+        pdf_target = (
+            job_dir
             / self.INPUT_FILENAME
         )
 
-        return self._atomic_write(
-            target=target,
-            data=pdf_bytes,
+        filename_target = (
+            job_dir
+            / self.SOURCE_FILENAME
         )
+
+        try:
+            result = self._atomic_write(
+                target=pdf_target,
+                data=pdf_bytes,
+            )
+
+            self._atomic_write(
+                target=filename_target,
+                data=source_filename.encode(
+                    "utf-8"
+                ),
+            )
+
+            return result
+
+        except Exception:
+            self.delete_job_files(
+                job_id
+            )
+            raise
 
     def input_path(
         self,
@@ -79,19 +100,53 @@ class EphemeralFileStorage:
 
         return path
 
-    def delete_input(
+    def source_filename(
         self,
         job_id: UUID,
-    ) -> None:
-        """Idempotently удалить исходный PDF."""
+    ) -> str:
+        """Получить исходное имя либо безопасный fallback."""
         path = (
             self._job_dir(
                 job_id
             )
-            / self.INPUT_FILENAME
+            / self.SOURCE_FILENAME
         )
 
-        path.unlink(
+        if not path.is_file():
+            return "document.pdf"
+
+        value = (
+            path.read_text(
+                encoding="utf-8"
+            )
+            .strip()
+        )
+
+        return (
+            value
+            or "document.pdf"
+        )
+
+    def delete_input(
+        self,
+        job_id: UUID,
+    ) -> None:
+        """Idempotently удалить исходный PDF и filename metadata."""
+        directory = self._job_dir(
+            job_id
+        )
+
+        (
+            directory
+            / self.INPUT_FILENAME
+        ).unlink(
+            missing_ok=True
+        )
+
+        (
+            directory
+            / self.SOURCE_FILENAME
+        ).unlink(
             missing_ok=True
         )
 
@@ -102,12 +157,12 @@ class EphemeralFileStorage:
     def save_result(
         self,
         job_id: UUID,
-        pdf_bytes: bytes,
+        result_bytes: bytes,
     ) -> Path:
-        """Атомарно сохранить временный PDF-результат."""
-        if not pdf_bytes:
+        """Атомарно сохранить временный JSON-result."""
+        if not result_bytes:
             raise ValueError(
-                "Result PDF cannot be empty"
+                "Result JSON cannot be empty"
             )
 
         target = (
@@ -119,14 +174,14 @@ class EphemeralFileStorage:
 
         return self._atomic_write(
             target=target,
-            data=pdf_bytes,
+            data=result_bytes,
         )
 
     def consume_result(
         self,
         job_id: UUID,
     ) -> bytes:
-        """Прочитать result.pdf и немедленно удалить серверную копию."""
+        """Прочитать result.json и удалить серверную копию."""
         path = (
             self._job_dir(
                 job_id
@@ -141,7 +196,7 @@ class EphemeralFileStorage:
 
         data = path.read_bytes()
 
-        # До этой строки мы доходим только после успешного чтения.
+        # Удаляем только после успешного read_bytes().
         path.unlink()
 
         self._remove_empty_job_dir(
@@ -168,17 +223,7 @@ class EphemeralFileStorage:
         known_job_ids: frozenset[UUID],
         cutoff: datetime,
     ) -> int:
-        """Удалить stale filesystem artifacts вне нормального lifecycle.
-
-        Правила:
-
-        - зарегистрированные job directories не удаляются целиком;
-        - старые *.tmp внутри них удаляются;
-        - незарегистрированный каталог удаляется только после cutoff;
-        - старые stray files/symlinks в root также удаляются.
-
-        Возвращается количество удалённых artifacts.
-        """
+        """Удалить stale filesystem artifacts вне lifecycle."""
         if cutoff.tzinfo is None:
             raise ValueError(
                 "cutoff must be timezone-aware"
@@ -240,8 +285,6 @@ class EphemeralFileStorage:
                 deleted += 1
                 continue
 
-            # Даже у зарегистрированного job мог остаться .tmp после
-            # аварийного завершения предыдущей операции записи.
             for temporary in tuple(
                 entry.rglob(
                     "*.tmp"
@@ -284,7 +327,7 @@ class EphemeralFileStorage:
         self,
         job_id: UUID,
     ) -> bool:
-        """Вернуть True, если результат ожидает выдачи."""
+        """Вернуть True, если JSON ожидает выдачи."""
         return (
             self._job_dir(
                 job_id
@@ -298,7 +341,7 @@ class EphemeralFileStorage:
         target: Path,
         data: bytes,
     ) -> Path:
-        """Записать файл через temporary path без оставления .tmp."""
+        """Записать artifact через temporary path."""
         target.parent.mkdir(
             parents=True,
             exist_ok=True,
@@ -318,8 +361,6 @@ class EphemeralFileStorage:
                 target
             )
         finally:
-            # После успешного replace() temporary уже не существует.
-            # После исключения эта строка удалит partial/stale temp.
             temporary.unlink(
                 missing_ok=True
             )
@@ -340,7 +381,7 @@ class EphemeralFileStorage:
         self,
         job_id: UUID,
     ) -> None:
-        """Удалить директорию job, если binary-файлов больше нет."""
+        """Удалить directory, если artifacts больше нет."""
         directory = self._job_dir(
             job_id
         )
@@ -357,7 +398,7 @@ class EphemeralFileStorage:
     def _parse_job_id(
         value: str,
     ) -> UUID | None:
-        """Преобразовать имя каталога в UUID либо вернуть None."""
+        """Преобразовать имя каталога в UUID."""
         try:
             return UUID(
                 value

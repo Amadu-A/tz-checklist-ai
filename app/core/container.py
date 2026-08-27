@@ -6,16 +6,30 @@ from functools import lru_cache
 from app.application.services.analysis_pipeline_service import (
     AnalysisPipelineService,
 )
+from app.application.services.answer_dimension_validator import (
+    AnswerDimensionValidator,
+)
 from app.application.services.checklist_answering_service import (
     ChecklistAnsweringService,
 )
-from app.application.services.checklist_classifier import ChecklistClassifier
+from app.application.services.checklist_classifier import (
+    ChecklistClassifier,
+)
+from app.application.services.checklist_result_builder import (
+    ChecklistResultBuilder,
+)
 from app.application.services.document_chunker import DocumentChunker
-from app.application.services.document_content_service import DocumentContentService
-from app.application.services.grounded_answer_service import GroundedAnswerService
+from app.application.services.document_content_service import (
+    DocumentContentService,
+)
+from app.application.services.grounded_answer_service import (
+    GroundedAnswerService,
+)
 from app.application.services.hybrid_retriever import HybridRetriever
 from app.application.services.readiness_service import ReadinessService
-from app.application.services.result_delivery_service import ResultDeliveryService
+from app.application.services.result_delivery_service import (
+    ResultDeliveryService,
+)
 from app.application.services.retention_service import RetentionService
 from app.application.services.tz_check_workflow_service import (
     TzCheckWorkflowService,
@@ -23,23 +37,39 @@ from app.application.services.tz_check_workflow_service import (
 from app.application.services.visual_answer_fallback_service import (
     VisualAnswerFallbackService,
 )
-from app.application.use_cases.confirm_checklist import ConfirmChecklistUseCase
-from app.application.use_cases.select_checklist import SelectChecklistUseCase
+from app.application.use_cases.confirm_checklist import (
+    ConfirmChecklistUseCase,
+)
+from app.application.use_cases.select_checklist import (
+    SelectChecklistUseCase,
+)
 from app.core.config import get_settings
-from app.infrastructure.ai.ollama_answer_client import OllamaAnswerClient
-from app.infrastructure.ai.ollama_embedding_client import OllamaEmbeddingClient
-from app.infrastructure.ai.ollama_health_client import OllamaHealthClient
+from app.infrastructure.ai.ollama_answer_client import (
+    OllamaAnswerClient,
+)
+from app.infrastructure.ai.ollama_embedding_client import (
+    OllamaEmbeddingClient,
+)
+from app.infrastructure.ai.ollama_health_client import (
+    OllamaHealthClient,
+)
 from app.infrastructure.ai.ollama_vlm_client import OllamaVlmClient
 from app.infrastructure.checklists.yaml_checklist_repository import (
     YamlChecklistRepository,
 )
-from app.infrastructure.pdf.pymupdf_document_adapter import PyMuPdfDocumentAdapter
-from app.infrastructure.persistence.sqlite_job_repository import SqliteJobRepository
-from app.infrastructure.queue.celery_task_queue import CeleryTaskQueue
-from app.infrastructure.reporting.reportlab_checklist_renderer import (
-    ReportLabChecklistRenderer,
+from app.infrastructure.pdf.pymupdf_document_adapter import (
+    PyMuPdfDocumentAdapter,
 )
-from app.infrastructure.storage.ephemeral_file_storage import EphemeralFileStorage
+from app.infrastructure.persistence.sqlite_job_repository import (
+    SqliteJobRepository,
+)
+from app.infrastructure.queue.celery_task_queue import CeleryTaskQueue
+from app.infrastructure.reporting.json_checklist_result_serializer import (
+    JsonChecklistResultSerializer,
+)
+from app.infrastructure.storage.ephemeral_file_storage import (
+    EphemeralFileStorage,
+)
 
 
 @dataclass(
@@ -96,21 +126,30 @@ def get_container() -> Container:
         base_url=settings.ollama_base_url,
         model=settings.ollama_vlm_model,
         keep_alive=settings.ollama_keep_alive,
-        timeout_seconds=settings.ollama_request_timeout_seconds,
+        timeout_seconds=(
+            settings
+            .ollama_request_timeout_seconds
+        ),
     )
 
     embedding_client = OllamaEmbeddingClient(
         base_url=settings.ollama_base_url,
         model=settings.ollama_embedding_model,
         keep_alive=settings.ollama_keep_alive,
-        timeout_seconds=settings.ollama_request_timeout_seconds,
+        timeout_seconds=(
+            settings
+            .ollama_request_timeout_seconds
+        ),
     )
 
     answer_client = OllamaAnswerClient(
         base_url=settings.ollama_base_url,
         model=settings.ollama_llm_model,
         keep_alive=settings.ollama_keep_alive,
-        timeout_seconds=settings.ollama_request_timeout_seconds,
+        timeout_seconds=(
+            settings
+            .ollama_request_timeout_seconds
+        ),
     )
 
     content_service = DocumentContentService(
@@ -126,11 +165,21 @@ def get_container() -> Container:
     select_checklist_use_case = SelectChecklistUseCase(
         content_service=content_service,
         classifier=classifier,
-        classification_max_pages=settings.classification_max_pages,
-        min_native_chars=settings.classification_min_native_chars,
-        min_confidence=settings.classification_min_confidence,
-        min_page_chars=settings.classification_min_page_chars,
-        vlm_fallback_max_pages=settings.vlm_fallback_max_pages,
+        classification_max_pages=(
+            settings.classification_max_pages
+        ),
+        min_native_chars=(
+            settings.classification_min_native_chars
+        ),
+        min_confidence=(
+            settings.classification_min_confidence
+        ),
+        min_page_chars=(
+            settings.classification_min_page_chars
+        ),
+        vlm_fallback_max_pages=(
+            settings.vlm_fallback_max_pages
+        ),
     )
 
     confirm_checklist_use_case = ConfirmChecklistUseCase(
@@ -138,27 +187,41 @@ def get_container() -> Container:
     )
 
     document_chunker = DocumentChunker(
-        max_chars=settings.retrieval_chunk_max_chars,
-        overlap_chars=settings.retrieval_chunk_overlap_chars,
+        max_chars=(
+            settings.retrieval_chunk_max_chars
+        ),
+        overlap_chars=(
+            settings.retrieval_chunk_overlap_chars
+        ),
     )
 
     retriever = HybridRetriever(
         embedding_client=embedding_client,
         top_k=settings.retrieval_top_k,
-        batch_size=settings.retrieval_embedding_batch_size,
-        semantic_weight=settings.retrieval_semantic_weight,
-        lexical_weight=settings.retrieval_lexical_weight,
+        batch_size=(
+            settings.retrieval_embedding_batch_size
+        ),
+        semantic_weight=(
+            settings.retrieval_semantic_weight
+        ),
+        lexical_weight=(
+            settings.retrieval_lexical_weight
+        ),
     )
 
     grounded_answer_service = GroundedAnswerService(
         answer_client=answer_client,
-        found_min_confidence=settings.answer_found_min_confidence,
+        found_min_confidence=(
+            settings.answer_found_min_confidence
+        ),
     )
 
     checklist_answering_service = ChecklistAnsweringService(
         retriever=retriever,
         answer_service=grounded_answer_service,
-        answer_batch_size=settings.answer_batch_size,
+        answer_batch_size=(
+            settings.answer_batch_size
+        ),
     )
 
     visual_fallback_service = VisualAnswerFallbackService(
@@ -166,12 +229,28 @@ def get_container() -> Container:
         chunker=document_chunker,
         retriever=retriever,
         answer_service=grounded_answer_service,
-        answer_batch_size=settings.answer_batch_size,
-        max_pages=settings.answer_vlm_fallback_max_pages,
-        weak_page_max_chars=settings.answer_vlm_weak_page_max_chars,
+        answer_batch_size=(
+            settings.answer_batch_size
+        ),
+        max_pages=(
+            settings.answer_vlm_fallback_max_pages
+        ),
+        weak_page_max_chars=(
+            settings.answer_vlm_weak_page_max_chars
+        ),
     )
 
-    report_renderer = ReportLabChecklistRenderer()
+    dimension_validator = (
+        AnswerDimensionValidator()
+    )
+
+    result_builder = ChecklistResultBuilder(
+        dimension_validator=dimension_validator
+    )
+
+    result_serializer = (
+        JsonChecklistResultSerializer()
+    )
 
     ollama_health = OllamaHealthClient(
         base_url=settings.ollama_base_url,
@@ -194,17 +273,25 @@ def get_container() -> Container:
         settings.jobs_dir
     )
 
-    result_delivery_service = ResultDeliveryService(
-        repository=job_repository,
-        storage=job_storage,
+    result_delivery_service = (
+        ResultDeliveryService(
+            repository=job_repository,
+            storage=job_storage,
+        )
     )
 
     retention_service = RetentionService(
         repository=job_repository,
         storage=job_storage,
-        result_ttl_minutes=settings.result_file_ttl_minutes,
-        orphan_ttl_hours=settings.orphan_job_ttl_hours,
-        failed_state_ttl_hours=settings.failed_job_state_ttl_hours,
+        result_ttl_minutes=(
+            settings.result_file_ttl_minutes
+        ),
+        orphan_ttl_hours=(
+            settings.orphan_job_ttl_hours
+        ),
+        failed_state_ttl_hours=(
+            settings.failed_job_state_ttl_hours
+        ),
     )
 
     task_queue = CeleryTaskQueue(
@@ -212,25 +299,44 @@ def get_container() -> Container:
         queue_name=settings.celery_queue_name,
     )
 
-    analysis_pipeline_service = AnalysisPipelineService(
-        repository=job_repository,
-        storage=job_storage,
-        checklist_repository=checklist_repository,
-        content_service=content_service,
-        chunker=document_chunker,
-        answering_service=checklist_answering_service,
-        visual_fallback_service=visual_fallback_service,
-        report_renderer=report_renderer,
+    analysis_pipeline_service = (
+        AnalysisPipelineService(
+            repository=job_repository,
+            storage=job_storage,
+            checklist_repository=(
+                checklist_repository
+            ),
+            content_service=content_service,
+            chunker=document_chunker,
+            answering_service=(
+                checklist_answering_service
+            ),
+            visual_fallback_service=(
+                visual_fallback_service
+            ),
+            result_builder=result_builder,
+            result_serializer=result_serializer,
+        )
     )
 
-    tz_check_workflow_service = TzCheckWorkflowService(
-        select_use_case=select_checklist_use_case,
-        confirm_use_case=confirm_checklist_use_case,
-        repository=job_repository,
-        storage=job_storage,
-        task_queue=task_queue,
-        result_delivery_service=result_delivery_service,
-        max_upload_bytes=settings.max_upload_bytes,
+    tz_check_workflow_service = (
+        TzCheckWorkflowService(
+            select_use_case=(
+                select_checklist_use_case
+            ),
+            confirm_use_case=(
+                confirm_checklist_use_case
+            ),
+            repository=job_repository,
+            storage=job_storage,
+            task_queue=task_queue,
+            result_delivery_service=(
+                result_delivery_service
+            ),
+            max_upload_bytes=(
+                settings.max_upload_bytes
+            ),
+        )
     )
 
     return Container(
@@ -240,16 +346,28 @@ def get_container() -> Container:
             ),
         ),
         checklist_repository=checklist_repository,
-        select_checklist_use_case=select_checklist_use_case,
-        confirm_checklist_use_case=confirm_checklist_use_case,
+        select_checklist_use_case=(
+            select_checklist_use_case
+        ),
+        confirm_checklist_use_case=(
+            confirm_checklist_use_case
+        ),
         document_chunker=document_chunker,
         retriever=retriever,
-        checklist_answering_service=checklist_answering_service,
-        analysis_pipeline_service=analysis_pipeline_service,
-        tz_check_workflow_service=tz_check_workflow_service,
+        checklist_answering_service=(
+            checklist_answering_service
+        ),
+        analysis_pipeline_service=(
+            analysis_pipeline_service
+        ),
+        tz_check_workflow_service=(
+            tz_check_workflow_service
+        ),
         job_repository=job_repository,
         job_storage=job_storage,
         task_queue=task_queue,
-        result_delivery_service=result_delivery_service,
+        result_delivery_service=(
+            result_delivery_service
+        ),
         retention_service=retention_service,
     )

@@ -4,13 +4,93 @@ from enum import StrEnum
 
 
 class ChecklistCode(StrEnum):
-    """Стабильные коды пяти поддерживаемых чек-листов."""
+    """Стабильные внутренние коды пяти чек-листов."""
 
     UUTE = "UUTE"
     ITP = "ITP"
     MKBI = "MKBI"
     SPD = "SPD"
     AUPT = "AUPT"
+
+
+class ChecklistTag(StrEnum):
+    """Публичные теги чек-листов для 1С / Telegram / API."""
+
+    UUTE = "УУТЭ"
+    ITP = "ИТП"
+    MKBI = "МКБИ"
+    SPD = "СПД"
+    AUPT = "АУПТ"
+
+    @property
+    def code(
+        self,
+    ) -> ChecklistCode:
+        """Преобразовать публичный тег во внутренний код."""
+        mapping = {
+            ChecklistTag.UUTE: ChecklistCode.UUTE,
+            ChecklistTag.ITP: ChecklistCode.ITP,
+            ChecklistTag.MKBI: ChecklistCode.MKBI,
+            ChecklistTag.SPD: ChecklistCode.SPD,
+            ChecklistTag.AUPT: ChecklistCode.AUPT,
+        }
+
+        return mapping[
+            self
+        ]
+
+    @classmethod
+    def from_code(
+        cls,
+        code: ChecklistCode,
+    ) -> "ChecklistTag":
+        """Получить публичный тег по внутреннему коду."""
+        mapping = {
+            ChecklistCode.UUTE: cls.UUTE,
+            ChecklistCode.ITP: cls.ITP,
+            ChecklistCode.MKBI: cls.MKBI,
+            ChecklistCode.SPD: cls.SPD,
+            ChecklistCode.AUPT: cls.AUPT,
+        }
+
+        return mapping[
+            code
+        ]
+
+    @classmethod
+    def _missing_(
+        cls,
+        value: object,
+    ) -> "ChecklistTag | None":
+        """Разрешить регистр и латинские внутренние коды."""
+        if not isinstance(
+            value,
+            str,
+        ):
+            return None
+
+        normalized = (
+            value
+            .strip()
+            .casefold()
+        )
+
+        aliases = {
+            "уутэ": cls.UUTE,
+            "uute": cls.UUTE,
+            "итп": cls.ITP,
+            "itp": cls.ITP,
+            "мкби": cls.MKBI,
+            "mkbi": cls.MKBI,
+            "спд": cls.SPD,
+            "spd": cls.SPD,
+            "аупт": cls.AUPT,
+            "aupt": cls.AUPT,
+        }
+
+        return aliases.get(
+            normalized
+        )
 
 
 class ClassificationSource(StrEnum):
@@ -30,17 +110,20 @@ class VlmFallbackReason(StrEnum):
 class JobStatus(StrEnum):
     """Состояние фонового анализа.
 
-    AWAITING_CONFIRMATION означает, что исходный PDF уже принят,
-    но пользователь ещё не подтвердил предложенный чек-лист.
+    AWAITING_CONFIRMATION:
+        PDF принят, но auto-detected checklist ещё не подтверждён.
 
-    QUEUED означает, что задание отправлено в RabbitMQ.
+    QUEUED:
+        задание отправлено в RabbitMQ.
 
-    PROCESSING означает, что Celery worker уже начал анализ.
+    PROCESSING:
+        worker выполняет анализ.
 
-    COMPLETED означает, что временный PDF-отчёт готов к одноразовой
-    выдаче клиенту.
+    COMPLETED:
+        временный JSON-результат готов к одноразовой выдаче.
 
-    FAILED означает, что обработка завершилась ошибкой.
+    FAILED:
+        обработка завершилась ошибкой.
     """
 
     AWAITING_CONFIRMATION = "awaiting_confirmation"
@@ -48,3 +131,4 @@ class JobStatus(StrEnum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    

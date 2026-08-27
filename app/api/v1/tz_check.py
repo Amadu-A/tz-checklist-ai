@@ -23,6 +23,7 @@ from app.api.v1.schemas import (
     TzCheckConfirmResponse,
     TzCheckSelectResponse,
     TzCheckStatusResponse,
+    TzCheckTaggedSelectResponse,
 )
 from app.application.errors import (
     InvalidJobStateError,
@@ -35,7 +36,13 @@ from app.application.errors import (
 from app.application.services.tz_check_workflow_service import (
     TzCheckWorkflowService,
 )
-from app.domain.enums import ChecklistCode
+from app.domain.enums import (
+    ChecklistCode,
+    ChecklistTag,
+)
+from app.domain.workflow import (
+    WorkflowTaggedSubmissionResult,
+)
 
 router = APIRouter(
     tags=[
@@ -67,22 +74,28 @@ async def tz_check(
         ChecklistCode | None,
         Form(),
     ] = None,
+    checklist_tag: Annotated[
+        ChecklistTag | None,
+        Form(),
+    ] = None,
     file: Annotated[
         UploadFile | None,
         File(),
     ] = None,
 ) -> (
     TzCheckSelectResponse
+    | TzCheckTaggedSelectResponse
     | TzCheckConfirmResponse
     | TzCheckStatusResponse
     | Response
 ):
-    """Выполнить одну операцию lifecycle ТЗ через единый endpoint."""
+    """Выполнить одну операцию lifecycle ТЗ."""
     try:
         if action == TzCheckAction.SELECT:
             return await _select(
                 service=service,
                 file=file,
+                checklist_tag=checklist_tag,
             )
 
         if action == TzCheckAction.CONFIRM:
@@ -90,6 +103,7 @@ async def tz_check(
                 service=service,
                 request_id=request_id,
                 checklist_code=checklist_code,
+                checklist_tag=checklist_tag,
             )
 
         if action == TzCheckAction.STATUS:
@@ -104,8 +118,6 @@ async def tz_check(
                 request_id=request_id,
             )
 
-        # StrEnum + FastAPI validation фактически
-        # не позволяет попасть сюда.
         raise HTTPException(
             status_code=(
                 status.HTTP_400_BAD_REQUEST
@@ -161,8 +173,12 @@ async def _select(
     *,
     service: TzCheckWorkflowService,
     file: UploadFile | None,
-) -> TzCheckSelectResponse:
-    """Обработать action=select."""
+    checklist_tag: ChecklistTag | None,
+) -> (
+    TzCheckSelectResponse
+    | TzCheckTaggedSelectResponse
+):
+    """Обработать SELECT с optional tag."""
     if file is None:
         raise HTTPException(
             status_code=(
@@ -174,14 +190,38 @@ async def _select(
             ),
         )
 
+    source_filename = (
+        file.filename
+        or "document.pdf"
+    )
+
     try:
         pdf_bytes = await file.read()
     finally:
         await file.close()
 
     result = await service.select(
-        pdf_bytes
+        pdf_bytes,
+        source_filename=source_filename,
+        checklist_tag=checklist_tag,
     )
+
+    if isinstance(
+        result,
+        WorkflowTaggedSubmissionResult,
+    ):
+        return TzCheckTaggedSelectResponse(
+            request_id=result.request_id,
+            checklist_code=(
+                result.checklist.code
+            ),
+            checklist_tag=(
+                result.checklist_tag
+            ),
+            checklist_title=(
+                result.checklist.title
+            ),
+        )
 
     suggestion = (
         result
@@ -189,11 +229,21 @@ async def _select(
         .suggestion
     )
 
+    recommended_tag = (
+        ChecklistTag.from_code(
+            suggestion.recommended_code
+        )
+        if suggestion.recommended_code
+        is not None
+        else None
+    )
+
     return TzCheckSelectResponse(
         request_id=result.request_id,
         recommended_checklist=(
             suggestion.recommended_code
         ),
+        recommended_tag=recommended_tag,
         confidence=suggestion.confidence,
         requires_confirmation=(
             suggestion.requires_confirmation
@@ -226,8 +276,9 @@ def _confirm(
     service: TzCheckWorkflowService,
     request_id: UUID | None,
     checklist_code: ChecklistCode | None,
+    checklist_tag: ChecklistTag | None,
 ) -> TzCheckConfirmResponse:
-    """Обработать action=confirm."""
+    """Подтвердить auto-detected checklist."""
     if request_id is None:
         raise HTTPException(
             status_code=(
@@ -239,20 +290,14 @@ def _confirm(
             ),
         )
 
-    if checklist_code is None:
-        raise HTTPException(
-            status_code=(
-                status.HTTP_400_BAD_REQUEST
-            ),
-            detail=(
-                "checklist_code is required "
-                "for action=confirm"
-            ),
-        )
+    resolved_code = _resolve_confirm_code(
+        checklist_code=checklist_code,
+        checklist_tag=checklist_tag,
+    )
 
     result = service.confirm(
         request_id=request_id,
-        checklist_code=checklist_code,
+        checklist_code=resolved_code,
     )
 
     return TzCheckConfirmResponse(
@@ -260,6 +305,11 @@ def _confirm(
         status=result.status,
         checklist_code=(
             result.checklist.code
+        ),
+        checklist_tag=(
+            ChecklistTag.from_code(
+                result.checklist.code
+            )
         ),
         checklist_title=(
             result.checklist.title
@@ -272,7 +322,7 @@ def _status(
     service: TzCheckWorkflowService,
     request_id: UUID | None,
 ) -> TzCheckStatusResponse:
-    """Обработать action=status."""
+    """Получить status."""
     required_id = _require_request_id(
         request_id,
         action=TzCheckAction.STATUS,
@@ -282,10 +332,20 @@ def _status(
         required_id
     )
 
+    tag = (
+        ChecklistTag.from_code(
+            result.checklist_code
+        )
+        if result.checklist_code
+        is not None
+        else None
+    )
+
     return TzCheckStatusResponse(
         request_id=result.request_id,
         status=result.status,
         checklist_code=result.checklist_code,
+        checklist_tag=tag,
         progress_percent=result.progress_percent,
         result_ready=result.result_ready,
         error=result.error,
@@ -297,31 +357,69 @@ def _result(
     service: TzCheckWorkflowService,
     request_id: UUID | None,
 ) -> Response:
-    """Обработать одноразовую выдачу PDF."""
+    """Одноразово вернуть JSON result."""
     required_id = _require_request_id(
         request_id,
         action=TzCheckAction.RESULT,
     )
 
-    pdf_bytes = service.result(
+    result_bytes = service.result(
         required_id
     )
 
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
+        content=result_bytes,
+        media_type="application/json",
         headers={
-            "Content-Disposition": (
-                "attachment; "
-                f'filename="tz-checklist-{required_id}.pdf"'
-            ),
-            # Ни браузер, ни reverse proxy не должны
-            # кешировать пользовательский отчёт.
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _resolve_confirm_code(
+    *,
+    checklist_code: ChecklistCode | None,
+    checklist_tag: ChecklistTag | None,
+) -> ChecklistCode:
+    """Разрешить confirm по code либо public tag."""
+    if (
+        checklist_code is None
+        and checklist_tag is None
+    ):
+        raise HTTPException(
+            status_code=(
+                status.HTTP_400_BAD_REQUEST
+            ),
+            detail=(
+                "checklist_code or checklist_tag "
+                "is required for action=confirm"
+            ),
+        )
+
+    if (
+        checklist_code is not None
+        and checklist_tag is not None
+        and checklist_code
+        != checklist_tag.code
+    ):
+        raise HTTPException(
+            status_code=(
+                status.HTTP_400_BAD_REQUEST
+            ),
+            detail=(
+                "checklist_code and checklist_tag "
+                "refer to different checklists"
+            ),
+        )
+
+    if checklist_tag is not None:
+        return checklist_tag.code
+
+    assert checklist_code is not None
+
+    return checklist_code
 
 
 def _require_request_id(

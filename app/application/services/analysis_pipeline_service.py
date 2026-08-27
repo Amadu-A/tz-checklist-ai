@@ -1,5 +1,6 @@
 # app/application/services/analysis_pipeline_service.py
 
+from time import perf_counter
 from uuid import UUID
 
 from app.application.ports.checklist_repository import (
@@ -7,9 +8,14 @@ from app.application.ports.checklist_repository import (
 )
 from app.application.ports.job_repository import JobRepositoryPort
 from app.application.ports.job_storage import JobStoragePort
-from app.application.ports.report_renderer import ChecklistReportRendererPort
+from app.application.ports.result_serializer import (
+    ChecklistResultSerializerPort,
+)
 from app.application.services.checklist_answering_service import (
     ChecklistAnsweringService,
+)
+from app.application.services.checklist_result_builder import (
+    ChecklistResultBuilder,
 )
 from app.application.services.document_chunker import DocumentChunker
 from app.application.services.document_content_service import (
@@ -22,20 +28,23 @@ from app.domain.enums import ChecklistCode, JobStatus
 
 
 class AnalysisPipelineService:
-    """Полный lifecycle фоновой обработки одного ТЗ.
-
-    Binary retention policy:
+    """Полный lifecycle фоновой обработки ТЗ.
 
     success:
-        input.pdf  -> удаляется
-        result.pdf -> временно остаётся до GET result либо TTL
+
+        input.pdf
+            -> удаляется после обработки
+
+        result.json
+            -> временно хранится до action=result либо TTL
 
     failure:
-        input.pdf  -> удаляется
-        result.pdf -> удаляется
 
-    Native text, chunks, embeddings и AI evidence существуют только
-    в памяти worker и никогда не сохраняются в persistent storage.
+        все temporary artifacts удаляются
+
+    PDF report generation сейчас отключён.
+    ReportLab implementation остаётся в проекте и может быть
+    повторно подключён позже.
     """
 
     def __init__(
@@ -48,18 +57,26 @@ class AnalysisPipelineService:
         chunker: DocumentChunker,
         answering_service: ChecklistAnsweringService,
         visual_fallback_service: VisualAnswerFallbackService,
-        report_renderer: ChecklistReportRendererPort,
+        result_builder: ChecklistResultBuilder,
+        result_serializer: ChecklistResultSerializerPort,
     ) -> None:
         self._repository = repository
         self._storage = storage
-        self._checklist_repository = checklist_repository
+        self._checklist_repository = (
+            checklist_repository
+        )
 
         self._content_service = content_service
         self._chunker = chunker
         self._answering_service = answering_service
-        self._visual_fallback_service = visual_fallback_service
+        self._visual_fallback_service = (
+            visual_fallback_service
+        )
 
-        self._report_renderer = report_renderer
+        self._result_builder = result_builder
+        self._result_serializer = (
+            result_serializer
+        )
 
     async def process(
         self,
@@ -67,18 +84,14 @@ class AnalysisPipelineService:
         job_id: UUID,
         checklist_code: ChecklistCode,
     ) -> None:
-        """Обработать подтверждённое фоновое задание."""
+        """Обработать подтверждённое либо tagged задание."""
         state = self._repository.get(
             job_id
         )
 
-        # Возможен безопасный redelivery после того, как result уже
-        # был выдан и metadata удалена.
         if state is None:
             return
 
-        # task_acks_late может привести к повторной доставке уже
-        # успешно завершённой задачи.
         if state.status == JobStatus.COMPLETED:
             return
 
@@ -97,17 +110,30 @@ class AnalysisPipelineService:
             checklist_code=checklist_code,
         )
 
+        processing_started = perf_counter()
+
         try:
             pdf_path = self._storage.input_path(
                 job_id
             )
 
-            checklist = self._checklist_repository.get(
-                checklist_code
+            source_filename = (
+                self._storage
+                .source_filename(
+                    job_id
+                )
+            )
+
+            checklist = (
+                self._checklist_repository
+                .get(
+                    checklist_code
+                )
             )
 
             native_context = (
-                self._content_service.extract_native(
+                self._content_service
+                .extract_native(
                     pdf_path
                 )
             )
@@ -115,6 +141,8 @@ class AnalysisPipelineService:
             chunks = self._chunker.chunk(
                 native_context
             )
+
+            search_started = perf_counter()
 
             native_analysis = (
                 await self._answering_service.analyze(
@@ -132,14 +160,35 @@ class AnalysisPipelineService:
                 )
             )
 
-            report_bytes = self._report_renderer.render(
+            search_seconds = (
+                perf_counter()
+                - search_started
+            )
+
+            processing_seconds = (
+                perf_counter()
+                - processing_started
+            )
+
+            result = self._result_builder.build(
+                request_id=job_id,
+                source_filename=source_filename,
                 checklist=checklist,
                 analysis=final_analysis,
+                processing_seconds=processing_seconds,
+                search_seconds=search_seconds,
+            )
+
+            result_bytes = (
+                self._result_serializer
+                .serialize(
+                    result
+                )
             )
 
             self._storage.save_result(
                 job_id,
-                report_bytes,
+                result_bytes,
             )
 
             self._repository.update(
@@ -149,15 +198,16 @@ class AnalysisPipelineService:
             )
 
         except Exception as exc:
-            # Ни исходный пользовательский файл, ни частично
-            # сформированный report после ошибки оставаться не должны.
             self._storage.delete_job_files(
                 job_id
             )
 
-            if self._repository.get(
-                job_id
-            ) is not None:
+            if (
+                self._repository.get(
+                    job_id
+                )
+                is not None
+            ):
                 self._repository.update(
                     job_id,
                     status=JobStatus.FAILED,
@@ -170,8 +220,7 @@ class AnalysisPipelineService:
             raise
 
         finally:
-            # На success удаляется только input.pdf.
-            # result.pdf остаётся для одноразовой выдачи клиенту.
+            # После success остаётся только result.json.
             self._storage.delete_input(
                 job_id
             )
@@ -180,7 +229,7 @@ class AnalysisPipelineService:
     def _safe_error(
         exc: Exception,
     ) -> str:
-        """Сохранить небольшую диагностическую ошибку без payload."""
+        """Сохранить короткую ошибку без пользовательского payload."""
         text = (
             f"{type(exc).__name__}: "
             f"{exc}"

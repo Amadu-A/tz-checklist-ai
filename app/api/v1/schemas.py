@@ -3,10 +3,15 @@
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+)
 
 from app.domain.enums import (
     ChecklistCode,
+    ChecklistTag,
     ClassificationSource,
     JobStatus,
     VlmFallbackReason,
@@ -48,12 +53,19 @@ class ReadinessResponse(ApiModel):
 
 
 class TzCheckAction(StrEnum):
-    """Допустимые операции единого endpoint."""
+    """Операции единого endpoint."""
 
     SELECT = "select"
     CONFIRM = "confirm"
     STATUS = "status"
     RESULT = "result"
+
+
+class ChecklistSelectionMode(StrEnum):
+    """Как выбран checklist."""
+
+    PROVIDED_TAG = "provided_tag"
+    AUTOMATIC = "automatic"
 
 
 class ChecklistRankingResponse(ApiModel):
@@ -71,7 +83,7 @@ class ChecklistRankingResponse(ApiModel):
 
 
 class TzCheckSelectResponse(ApiModel):
-    """Ответ action=select."""
+    """SELECT без checklist_tag: требуется подтверждение."""
 
     action: TzCheckAction = TzCheckAction.SELECT
 
@@ -81,8 +93,17 @@ class TzCheckSelectResponse(ApiModel):
         JobStatus.AWAITING_CONFIRMATION
     )
 
+    selection_mode: ChecklistSelectionMode = (
+        ChecklistSelectionMode.AUTOMATIC
+    )
+
     recommended_checklist: (
         ChecklistCode
+        | None
+    )
+
+    recommended_tag: (
+        ChecklistTag
         | None
     )
 
@@ -109,6 +130,28 @@ class TzCheckSelectResponse(ApiModel):
     )
 
 
+class TzCheckTaggedSelectResponse(ApiModel):
+    """SELECT с checklist_tag: classification/confirmation пропущены."""
+
+    action: TzCheckAction = TzCheckAction.SELECT
+
+    request_id: UUID
+
+    status: JobStatus = JobStatus.QUEUED
+
+    selection_mode: ChecklistSelectionMode = (
+        ChecklistSelectionMode.PROVIDED_TAG
+    )
+
+    checklist_code: ChecklistCode
+
+    checklist_tag: ChecklistTag
+
+    checklist_title: str
+
+    requires_confirmation: bool = False
+
+
 class TzCheckConfirmResponse(ApiModel):
     """Ответ action=confirm."""
 
@@ -119,6 +162,8 @@ class TzCheckConfirmResponse(ApiModel):
     status: JobStatus
 
     checklist_code: ChecklistCode
+
+    checklist_tag: ChecklistTag
 
     checklist_title: str
 
@@ -137,6 +182,11 @@ class TzCheckStatusResponse(ApiModel):
         | None
     ) = None
 
+    checklist_tag: (
+        ChecklistTag
+        | None
+    ) = None
+
     progress_percent: int = Field(
         ge=0,
         le=100,
@@ -151,4 +201,3 @@ class ErrorResponse(ApiModel):
     """Публичная форма ожидаемой ошибки workflow."""
 
     detail: str
-    

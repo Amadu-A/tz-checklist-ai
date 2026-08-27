@@ -22,40 +22,40 @@ from app.application.use_cases.confirm_checklist import (
 from app.application.use_cases.select_checklist import (
     SelectChecklistUseCase,
 )
-from app.domain.enums import ChecklistCode, JobStatus
+from app.domain.enums import (
+    ChecklistCode,
+    ChecklistTag,
+    JobStatus,
+)
 from app.domain.workflow import (
     WorkflowConfirmationResult,
     WorkflowSelectionResult,
     WorkflowStatusResult,
+    WorkflowTaggedSubmissionResult,
 )
 
 
 class TzCheckWorkflowService:
-    """Оркестрирует весь lifecycle единого /tz-check endpoint.
+    """Оркестрирует lifecycle единого /tz-check endpoint.
 
-    Lifecycle:
+    Вариант 1:
 
-        SELECT
-            -> сохранить temporary input.pdf
-            -> определить рекомендуемый checklist
-            -> AWAITING_CONFIRMATION
-
-        CONFIRM
-            -> проверить пользовательский выбор
+        SELECT + checklist_tag
+            -> сохранить PDF
+            -> пропустить classification
             -> QUEUED
-            -> RabbitMQ
 
-        worker
-            -> PROCESSING
-            -> COMPLETED либо FAILED
+    Вариант 2:
 
-        RESULT
-            -> прочитать result.pdf
-            -> удалить серверную копию
-            -> удалить metadata job
+        SELECT без checklist_tag
+            -> сохранить PDF
+            -> auto-classification
+            -> AWAITING_CONFIRMATION
+            -> CONFIRM
+            -> QUEUED
 
-    Повторный CONFIRM для уже поставленного задания не создаёт
-    duplicate Celery task.
+    RESULT:
+        одноразово возвращает JSON и удаляет backend state.
     """
 
     _PROGRESS_BY_STATUS = {
@@ -93,32 +93,71 @@ class TzCheckWorkflowService:
             result_delivery_service
         )
 
-        self._max_upload_bytes = max_upload_bytes
+        self._max_upload_bytes = (
+            max_upload_bytes
+        )
 
     async def select(
         self,
         pdf_bytes: bytes,
-    ) -> WorkflowSelectionResult:
-        """Принять PDF и вернуть рекомендацию checklist."""
+        *,
+        source_filename: str = "document.pdf",
+        checklist_tag: ChecklistTag | None = None,
+    ) -> (
+        WorkflowSelectionResult
+        | WorkflowTaggedSubmissionResult
+    ):
+        """Принять PDF и выбрать direct либо automatic workflow."""
         self._validate_pdf(
             pdf_bytes
         )
 
+        safe_filename = (
+            self._normalize_source_filename(
+                source_filename
+            )
+        )
+
+        if checklist_tag is not None:
+            return self._submit_tagged(
+                pdf_bytes=pdf_bytes,
+                source_filename=safe_filename,
+                checklist_tag=checklist_tag,
+            )
+
+        return await self._select_automatically(
+            pdf_bytes=pdf_bytes,
+            source_filename=safe_filename,
+        )
+
+    async def _select_automatically(
+        self,
+        *,
+        pdf_bytes: bytes,
+        source_filename: str,
+    ) -> WorkflowSelectionResult:
+        """Сохранить PDF и запустить нынешнюю классификацию."""
         request_id = uuid4()
 
         self._repository.create(
             request_id,
-            status=JobStatus.AWAITING_CONFIRMATION,
+            status=(
+                JobStatus
+                .AWAITING_CONFIRMATION
+            ),
         )
 
         try:
             pdf_path = self._storage.save_input(
                 request_id,
                 pdf_bytes,
+                source_filename=source_filename,
             )
 
-            selection = await self._select_use_case.execute(
-                pdf_path
+            selection = (
+                await self._select_use_case.execute(
+                    pdf_path
+                )
             )
 
             return WorkflowSelectionResult(
@@ -127,8 +166,6 @@ class TzCheckWorkflowService:
             )
 
         except Exception:
-            # Если classification/VLM упали, пользовательский PDF
-            # не должен остаться в storage.
             self._storage.delete_job_files(
                 request_id
             )
@@ -145,13 +182,78 @@ class TzCheckWorkflowService:
 
             raise
 
+    def _submit_tagged(
+        self,
+        *,
+        pdf_bytes: bytes,
+        source_filename: str,
+        checklist_tag: ChecklistTag,
+    ) -> WorkflowTaggedSubmissionResult:
+        """Пропустить classification и сразу поставить job в очередь."""
+        confirmed = (
+            self._confirm_use_case
+            .execute(
+                checklist_tag.code
+            )
+        )
+
+        request_id = uuid4()
+
+        self._repository.create(
+            request_id,
+            status=JobStatus.QUEUED,
+            checklist_code=confirmed.code,
+        )
+
+        try:
+            self._storage.save_input(
+                request_id,
+                pdf_bytes,
+                source_filename=source_filename,
+            )
+        except Exception:
+            self._repository.delete(
+                request_id
+            )
+            raise
+
+        try:
+            self._task_queue.enqueue_analysis(
+                request_id,
+                confirmed.code,
+            )
+        except Exception as exc:
+            self._storage.delete_job_files(
+                request_id
+            )
+
+            if (
+                self._repository.get(
+                    request_id
+                )
+                is not None
+            ):
+                self._repository.delete(
+                    request_id
+                )
+
+            raise QueueSubmissionError(
+                "Failed to submit job to RabbitMQ"
+            ) from exc
+
+        return WorkflowTaggedSubmissionResult(
+            request_id=request_id,
+            checklist=confirmed,
+            checklist_tag=checklist_tag,
+        )
+
     def confirm(
         self,
         *,
         request_id: UUID,
         checklist_code: ChecklistCode,
     ) -> WorkflowConfirmationResult:
-        """Подтвердить recommendation или пользовательский override."""
+        """Подтвердить auto-detected checklist либо override."""
         state = self._get_required_state(
             request_id
         )
@@ -160,7 +262,10 @@ class TzCheckWorkflowService:
             checklist_code
         )
 
-        if state.status == JobStatus.AWAITING_CONFIRMATION:
+        if (
+            state.status
+            == JobStatus.AWAITING_CONFIRMATION
+        ):
             if not self._storage.has_input(
                 request_id
             ):
@@ -180,10 +285,6 @@ class TzCheckWorkflowService:
                     confirmed.code,
                 )
             except Exception as exc:
-                # Очередь не приняла job.
-                #
-                # Возвращаем состояние назад, чтобы 1С могла повторить
-                # confirm, а input.pdf остаётся доступным до TTL.
                 self._repository.update(
                     request_id,
                     status=(
@@ -203,8 +304,6 @@ class TzCheckWorkflowService:
                 status=JobStatus.QUEUED,
             )
 
-        # Idempotency:
-        # повторный confirm того же job не отправляет вторую Celery task.
         if state.status in {
             JobStatus.QUEUED,
             JobStatus.PROCESSING,
@@ -226,7 +325,7 @@ class TzCheckWorkflowService:
             )
 
         raise InvalidJobStateError(
-            f"Job cannot be confirmed in state: "
+            "Job cannot be confirmed in state: "
             f"{state.status}"
         )
 
@@ -234,7 +333,7 @@ class TzCheckWorkflowService:
         self,
         request_id: UUID,
     ) -> WorkflowStatusResult:
-        """Получить небольшое техническое состояние job."""
+        """Получить техническое состояние job."""
         state = self._get_required_state(
             request_id
         )
@@ -264,7 +363,7 @@ class TzCheckWorkflowService:
         self,
         request_id: UUID,
     ) -> bytes:
-        """Одноразово получить PDF-результат."""
+        """Одноразово получить готовый JSON-result."""
         state = self._get_required_state(
             request_id
         )
@@ -275,17 +374,19 @@ class TzCheckWorkflowService:
             )
 
         try:
-            return self._result_delivery_service.consume(
-                request_id
+            return (
+                self._result_delivery_service
+                .consume(
+                    request_id
+                )
             )
         except (
             KeyError,
             FileNotFoundError,
         ) as exc:
-            # Например, два клиента одновременно запросили
-            # одноразовый result: первый запрос уже его забрал.
             raise JobNotFoundError(
-                f"Result no longer exists: {request_id}"
+                "Result no longer exists: "
+                f"{request_id}"
             ) from exc
 
     def _get_required_state(
@@ -308,23 +409,56 @@ class TzCheckWorkflowService:
         self,
         pdf_bytes: bytes,
     ) -> None:
-        """Дешёвая validation до записи пользовательского файла."""
+        """Дешёвая validation до записи файла."""
         if not pdf_bytes:
             raise InvalidPdfError(
                 "Uploaded PDF is empty"
             )
 
-        if len(pdf_bytes) > self._max_upload_bytes:
+        if (
+            len(pdf_bytes)
+            > self._max_upload_bytes
+        ):
             raise UploadTooLargeError(
                 "Uploaded PDF exceeds size limit"
             )
 
-        # Не полагаемся только на filename/content-type,
-        # потому что 1С может передавать application/octet-stream.
         if not pdf_bytes.lstrip().startswith(
             b"%PDF-"
         ):
             raise InvalidPdfError(
                 "Uploaded file is not a PDF"
             )
-        
+
+    @staticmethod
+    def _normalize_source_filename(
+        source_filename: str,
+    ) -> str:
+        """Удалить клиентские пути и ограничить filename metadata."""
+        value = (
+            source_filename
+            .replace(
+                "\\",
+                "/",
+            )
+            .rsplit(
+                "/",
+                1,
+            )[-1]
+            .replace(
+                "\x00",
+                "",
+            )
+            .strip()
+        )
+
+        if (
+            not value
+            or value in {
+                ".",
+                "..",
+            }
+        ):
+            return "document.pdf"
+
+        return value[:255]
