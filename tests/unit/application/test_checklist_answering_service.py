@@ -187,9 +187,9 @@ async def test_explicit_subscriber_object_name_skips_llm() -> None:
         hits=(
             RetrievalHit(
                 chunk=DocumentChunk(
-                    chunk_id="p2-c0",
+                    chunk_id="p2-c1",
                     page_number=2,
-                    chunk_index=0,
+                    chunk_index=1,
                     text=(
                         "Узел учета тепловой энергии.\n"
                         "Проектная документация.\n"
@@ -264,9 +264,9 @@ async def test_explicit_object_name_has_priority_over_subscriber() -> None:
         hits=(
             RetrievalHit(
                 chunk=DocumentChunk(
-                    chunk_id="p1-c0",
+                    chunk_id="p1-c1",
                     page_number=1,
-                    chunk_index=0,
+                    chunk_index=1,
                     text=(
                         "Абонент: "
                         "Эксплуатационная организация.\n"
@@ -311,9 +311,9 @@ async def test_object_name_can_be_on_next_line() -> None:
         hits=(
             RetrievalHit(
                 chunk=DocumentChunk(
-                    chunk_id="p2-c0",
+                    chunk_id="p2-c1",
                     page_number=2,
-                    chunk_index=0,
+                    chunk_index=1,
                     text=(
                         "Абонент:\n"
                         "Здание центрального склада\n"
@@ -388,9 +388,9 @@ async def test_unrelated_question_is_not_pre_resolved() -> None:
         hits=(
             RetrievalHit(
                 chunk=DocumentChunk(
-                    chunk_id="p2-c0",
+                    chunk_id="p2-c1",
                     page_number=2,
-                    chunk_index=0,
+                    chunk_index=1,
                     text=(
                         "Абонент: "
                         "Здание центрального склада."
