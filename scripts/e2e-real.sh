@@ -3,8 +3,7 @@
 
 set -Eeuo pipefail
 
-# Клиентские копии реальных документов/отчётов доступны
-# только владельцу файлов.
+# Реальные ТЗ и полученные JSON содержат пользовательские данные.
 umask 077
 
 ROOT_DIR="$(
@@ -14,32 +13,16 @@ ROOT_DIR="$(
 
 cd "${ROOT_DIR}"
 
-PDF_FILE="${1:-}"
-CHECKLIST_OVERRIDE="${2:-}"
+MODE="${1:-}"
+PDF_FILE="${2:-}"
+CHECKLIST_TAG="${3:-}"
 
-if [[ -z "${PDF_FILE}" ]]; then
-  echo "[e2e] ERROR: PDF path is required"
-  echo
-  echo "Available private PDF fixtures:"
+POLL_SECONDS="${E2E_POLL_SECONDS:-5}"
+TIMEOUT_SECONDS="${E2E_TIMEOUT_SECONDS:-7200}"
 
-  find tests/fixtures/private \
-    -maxdepth 1 \
-    -type f \
-    -iname '*.pdf' \
-    -print \
-    2>/dev/null || true
-
-  echo
-  echo "Usage:"
-  echo "./scripts/e2e-real.sh tests/fixtures/private/file.pdf"
-  echo "./scripts/e2e-real.sh tests/fixtures/private/file.pdf UUTE"
-
-  exit 1
-fi
-
-if [[ ! -f "${PDF_FILE}" ]]; then
-  echo "[e2e] ERROR: file does not exist:"
-  echo "${PDF_FILE}"
+if [[ ! -s .env ]]; then
+  echo "[e2e] ERROR: .env is missing"
+  echo "[e2e] Run ./scripts/run.sh first"
   exit 1
 fi
 
@@ -53,9 +36,56 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -s .env ]]; then
-  echo "[e2e] ERROR: .env is missing"
-  echo "[e2e] Run ./scripts/run.sh first"
+usage() {
+  echo "Usage:"
+  echo
+  echo "  Auto-detection + confirmation:"
+  echo "  ./scripts/e2e-real.sh auto <pdf>"
+  echo
+  echo "  Explicit checklist tag:"
+  echo "  ./scripts/e2e-real.sh tagged <pdf> <tag>"
+  echo
+  echo "  Invalid-tag validation:"
+  echo "  ./scripts/e2e-real.sh invalid-tag <pdf> <invalid-tag>"
+  echo
+  echo "Supported tags:"
+  echo "  УУТЭ  ИТП  МКБИ  СПД  АУПТ"
+  echo
+  echo "Latin aliases are also accepted:"
+  echo "  UUTE  ITP  MKBI  SPD  AUPT"
+}
+
+case "${MODE}" in
+  auto)
+    if [[ -z "${PDF_FILE}" ]]; then
+      usage
+      exit 1
+    fi
+    ;;
+
+  tagged)
+    if [[ -z "${PDF_FILE}" || -z "${CHECKLIST_TAG}" ]]; then
+      usage
+      exit 1
+    fi
+    ;;
+
+  invalid-tag)
+    if [[ -z "${PDF_FILE}" || -z "${CHECKLIST_TAG}" ]]; then
+      usage
+      exit 1
+    fi
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac
+
+if [[ ! -f "${PDF_FILE}" ]]; then
+  echo "[e2e] ERROR: file does not exist:"
+  echo "${PDF_FILE}"
   exit 1
 fi
 
@@ -68,15 +98,28 @@ API_HOST_PORT="$(
 
 API_HOST_PORT="${API_HOST_PORT:-8110}"
 
-BASE_URL="${TZ_CHECK_BASE_URL:-http://127.0.0.1:${API_HOST_PORT}}"
+BASE_URL="${
+  TZ_CHECK_BASE_URL:-
+  http://127.0.0.1:${API_HOST_PORT}
+}"
+
+# Удаляем возможные whitespace/newline из multiline expansion.
+BASE_URL="$(
+  printf '%s' "${BASE_URL}" \
+    | tr -d '\r\n '
+)"
 
 API_URL="${BASE_URL}/api/v1/tz-check"
 
-POLL_SECONDS="${E2E_POLL_SECONDS:-5}"
+ARTIFACT_DIR="${
+  E2E_ARTIFACT_DIR:-
+  ${ROOT_DIR}/artifacts/e2e
+}"
 
-TIMEOUT_SECONDS="${E2E_TIMEOUT_SECONDS:-7200}"
-
-ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-${ROOT_DIR}/artifacts/e2e}"
+ARTIFACT_DIR="$(
+  printf '%s' "${ARTIFACT_DIR}" \
+    | tr -d '\r\n'
+)"
 
 mkdir -p "${ARTIFACT_DIR}"
 
@@ -92,32 +135,39 @@ trap cleanup EXIT
 
 json_field() {
   local json_file="$1"
-  local field_name="$2"
+  local field_path="$2"
 
-  python3 - "${json_file}" "${field_name}" <<'PY'
+  python3 - \
+    "${json_file}" \
+    "${field_path}" <<'PY'
 import json
 import sys
 
-json_path = sys.argv[1]
-field_name = sys.argv[2]
+path = sys.argv[1]
+field_path = sys.argv[2]
 
 with open(
-    json_path,
+    path,
     "r",
     encoding="utf-8",
 ) as stream:
-    payload = json.load(stream)
+    value = json.load(stream)
 
-value = payload.get(
-    field_name
-)
+for part in field_path.split("."):
+    if not isinstance(value, dict):
+        value = None
+        break
+
+    value = value.get(
+        part
+    )
+
+    if value is None:
+        break
 
 if value is None:
     print("")
-elif isinstance(
-    value,
-    bool,
-):
+elif isinstance(value, bool):
     print(
         str(value).lower()
     )
@@ -132,6 +182,7 @@ pretty_json() {
   local json_file="$1"
 
   python3 -m json.tool \
+    --no-ensure-ascii \
     "${json_file}"
 }
 
@@ -154,6 +205,7 @@ require_success() {
   local operation="$3"
 
   if [[ ! "${http_code}" =~ ^2[0-9][0-9]$ ]]; then
+    echo
     echo "[e2e] ERROR: ${operation} returned HTTP ${http_code}"
 
     if [[ -s "${response_file}" ]]; then
@@ -165,9 +217,89 @@ require_success() {
   fi
 }
 
+canonical_tag_data() {
+  local supplied_tag="$1"
+
+  python3 - \
+    "${supplied_tag}" <<'PY'
+import sys
+
+value = (
+    sys.argv[1]
+    .strip()
+    .casefold()
+)
+
+mapping = {
+    "уутэ": ("UUTE", "УУТЭ"),
+    "uute": ("UUTE", "УУТЭ"),
+
+    "итп": ("ITP", "ИТП"),
+    "itp": ("ITP", "ИТП"),
+
+    "мкби": ("MKBI", "МКБИ"),
+    "mkbi": ("MKBI", "МКБИ"),
+
+    "спд": ("SPD", "СПД"),
+    "spd": ("SPD", "СПД"),
+
+    "аупт": ("AUPT", "АУПТ"),
+    "aupt": ("AUPT", "АУПТ"),
+}
+
+result = mapping.get(
+    value
+)
+
+if result is None:
+    raise SystemExit(
+        1
+    )
+
+print(
+    result[0],
+    result[1],
+)
+PY
+}
+
+other_tag() {
+  local checklist_code="$1"
+
+  case "${checklist_code}" in
+    UUTE)
+      echo "СПД"
+      ;;
+    ITP)
+      echo "МКБИ"
+      ;;
+    MKBI)
+      echo "УУТЭ"
+      ;;
+    SPD)
+      echo "АУПТ"
+      ;;
+    AUPT)
+      echo "ИТП"
+      ;;
+    *)
+      echo "СПД"
+      ;;
+  esac
+}
+
+echo "============================================================"
+echo "[e2e] mode: ${MODE}"
 echo "[e2e] API: ${API_URL}"
 echo "[e2e] PDF: ${PDF_FILE}"
 
+if [[ -n "${CHECKLIST_TAG}" ]]; then
+  echo "[e2e] tag: ${CHECKLIST_TAG}"
+fi
+
+echo "============================================================"
+
+echo
 echo "[e2e] Check liveness"
 
 curl \
@@ -184,21 +316,88 @@ curl \
 
 echo "[e2e] Service is ready"
 
-# ----------------------------------------------------------------------
+# ======================================================================
+# INVALID TAG
+# ======================================================================
+
+if [[ "${MODE}" == "invalid-tag" ]]; then
+  RESPONSE="${TMP_DIR}/invalid-tag.json"
+
+  echo
+  echo "[e2e] Send deliberately invalid checklist_tag"
+
+  HTTP_CODE="$(
+    post_form \
+      "${RESPONSE}" \
+      -F "action=select" \
+      -F "checklist_tag=${CHECKLIST_TAG}" \
+      -F "file=@${PDF_FILE};type=application/pdf"
+  )"
+
+  echo "[e2e] HTTP ${HTTP_CODE}"
+
+  if [[ "${HTTP_CODE}" != "422" ]]; then
+    echo "[e2e] ERROR: invalid tag must return HTTP 422"
+
+    if [[ -s "${RESPONSE}" ]]; then
+      cat "${RESPONSE}"
+      echo
+    fi
+
+    exit 1
+  fi
+
+  pretty_json \
+    "${RESPONSE}"
+
+  echo
+  echo "============================================================"
+  echo "[e2e] INVALID TAG PASSED"
+  echo "[e2e] HTTP 422 received as expected"
+  echo "============================================================"
+
+  exit 0
+fi
+
+# ======================================================================
 # SELECT
-# ----------------------------------------------------------------------
+# ======================================================================
 
 SELECT_RESPONSE="${TMP_DIR}/select.json"
 
 echo
 echo "[e2e] action=select"
 
-SELECT_CODE="$(
-  post_form \
-    "${SELECT_RESPONSE}" \
-    -F "action=select" \
-    -F "file=@${PDF_FILE};type=application/pdf"
-)"
+if [[ "${MODE}" == "tagged" ]]; then
+  if ! TAG_DATA="$(
+    canonical_tag_data \
+      "${CHECKLIST_TAG}"
+  )"; then
+    echo "[e2e] ERROR: unsupported test tag: ${CHECKLIST_TAG}"
+    exit 1
+  fi
+
+  read -r \
+    EXPECTED_CHECKLIST_CODE \
+    EXPECTED_CHECKLIST_TAG \
+    <<< "${TAG_DATA}"
+
+  SELECT_CODE="$(
+    post_form \
+      "${SELECT_RESPONSE}" \
+      -F "action=select" \
+      -F "checklist_tag=${CHECKLIST_TAG}" \
+      -F "file=@${PDF_FILE};type=application/pdf"
+  )"
+
+else
+  SELECT_CODE="$(
+    post_form \
+      "${SELECT_RESPONSE}" \
+      -F "action=select" \
+      -F "file=@${PDF_FILE};type=application/pdf"
+  )"
+fi
 
 require_success \
   "${SELECT_CODE}" \
@@ -214,16 +413,22 @@ REQUEST_ID="$(
     "request_id"
 )"
 
-RECOMMENDED_CHECKLIST="$(
+JOB_STATUS="$(
   json_field \
     "${SELECT_RESPONSE}" \
-    "recommended_checklist"
+    "status"
 )"
 
-CONFIDENCE="$(
+SELECTION_MODE="$(
   json_field \
     "${SELECT_RESPONSE}" \
-    "confidence"
+    "selection_mode"
+)"
+
+REQUIRES_CONFIRMATION="$(
+  json_field \
+    "${SELECT_RESPONSE}" \
+    "requires_confirmation"
 )"
 
 if [[ -z "${REQUEST_ID}" ]]; then
@@ -233,57 +438,276 @@ fi
 
 echo
 echo "[e2e] request_id: ${REQUEST_ID}"
-echo "[e2e] recommended checklist: ${RECOMMENDED_CHECKLIST:-<none>}"
-echo "[e2e] confidence: ${CONFIDENCE:-<none>}"
+echo "[e2e] selection_mode: ${SELECTION_MODE}"
+echo "[e2e] status: ${JOB_STATUS}"
+echo "[e2e] requires_confirmation: ${REQUIRES_CONFIRMATION}"
 
-if [[ -n "${CHECKLIST_OVERRIDE}" ]]; then
-  CHECKLIST_CODE="${CHECKLIST_OVERRIDE^^}"
+# ======================================================================
+# TAGGED FLOW
+# ======================================================================
 
-  echo "[e2e] Using checklist override: ${CHECKLIST_CODE}"
-else
-  CHECKLIST_CODE="${RECOMMENDED_CHECKLIST}"
+if [[ "${MODE}" == "tagged" ]]; then
+  ACTUAL_CODE="$(
+    json_field \
+      "${SELECT_RESPONSE}" \
+      "checklist_code"
+  )"
 
-  echo "[e2e] Confirming recommendation: ${CHECKLIST_CODE}"
+  ACTUAL_TAG="$(
+    json_field \
+      "${SELECT_RESPONSE}" \
+      "checklist_tag"
+  )"
+
+  if [[ "${SELECTION_MODE}" != "provided_tag" ]]; then
+    echo "[e2e] ERROR: tagged request did not use provided_tag"
+    exit 1
+  fi
+
+  if [[ "${JOB_STATUS}" != "queued" ]]; then
+    echo "[e2e] ERROR: tagged request must immediately be QUEUED"
+    exit 1
+  fi
+
+  if [[ "${REQUIRES_CONFIRMATION}" != "false" ]]; then
+    echo "[e2e] ERROR: tagged request must not require confirmation"
+    exit 1
+  fi
+
+  if [[ "${ACTUAL_CODE}" != "${EXPECTED_CHECKLIST_CODE}" ]]; then
+    echo "[e2e] ERROR: checklist code mismatch"
+    echo "[e2e] expected: ${EXPECTED_CHECKLIST_CODE}"
+    echo "[e2e] actual:   ${ACTUAL_CODE}"
+    exit 1
+  fi
+
+  if [[ "${ACTUAL_TAG}" != "${EXPECTED_CHECKLIST_TAG}" ]]; then
+    echo "[e2e] ERROR: canonical checklist tag mismatch"
+    echo "[e2e] expected: ${EXPECTED_CHECKLIST_TAG}"
+    echo "[e2e] actual:   ${ACTUAL_TAG}"
+    exit 1
+  fi
+
+  CHECKLIST_CODE="${ACTUAL_CODE}"
+  CHECKLIST_TAG_CANONICAL="${ACTUAL_TAG}"
+
+  echo
+  echo "[e2e] Tagged flow skipped classification confirmation: OK"
 fi
 
-case "${CHECKLIST_CODE}" in
-  UUTE|ITP|MKBI|SPD|AUPT)
-    ;;
-  *)
-    echo "[e2e] ERROR: invalid or missing checklist code:"
-    echo "${CHECKLIST_CODE}"
+# ======================================================================
+# AUTO FLOW + CONFIRMATION TESTS
+# ======================================================================
+
+if [[ "${MODE}" == "auto" ]]; then
+  RECOMMENDED_CODE="$(
+    json_field \
+      "${SELECT_RESPONSE}" \
+      "recommended_checklist"
+  )"
+
+  RECOMMENDED_TAG="$(
+    json_field \
+      "${SELECT_RESPONSE}" \
+      "recommended_tag"
+  )"
+
+  CONFIDENCE="$(
+    json_field \
+      "${SELECT_RESPONSE}" \
+      "confidence"
+  )"
+
+  echo
+  echo "[e2e] recommended code: ${RECOMMENDED_CODE:-<none>}"
+  echo "[e2e] recommended tag: ${RECOMMENDED_TAG:-<none>}"
+  echo "[e2e] confidence: ${CONFIDENCE:-<none>}"
+
+  if [[ "${SELECTION_MODE}" != "automatic" ]]; then
+    echo "[e2e] ERROR: request without tag must use automatic selection"
     exit 1
-    ;;
-esac
+  fi
 
-# ----------------------------------------------------------------------
-# CONFIRM
-# ----------------------------------------------------------------------
+  if [[ "${JOB_STATUS}" != "awaiting_confirmation" ]]; then
+    echo "[e2e] ERROR: automatic flow must await confirmation"
+    exit 1
+  fi
 
-CONFIRM_RESPONSE="${TMP_DIR}/confirm.json"
+  if [[ "${REQUIRES_CONFIRMATION}" != "true" ]]; then
+    echo "[e2e] ERROR: automatic flow must require confirmation"
+    exit 1
+  fi
 
-echo
-echo "[e2e] action=confirm"
+  if [[ -z "${RECOMMENDED_CODE}" || -z "${RECOMMENDED_TAG}" ]]; then
+    echo "[e2e] ERROR: auto classifier returned no recommendation"
+    exit 1
+  fi
 
-CONFIRM_CODE="$(
-  post_form \
+  CHECKLIST_CODE="${RECOMMENDED_CODE}"
+  CHECKLIST_TAG_CANONICAL="${RECOMMENDED_TAG}"
+
+  # --------------------------------------------------------------------
+  # CONFLICTING CONFIRM
+  # --------------------------------------------------------------------
+
+  WRONG_TAG="$(
+    other_tag \
+      "${RECOMMENDED_CODE}"
+  )"
+
+  CONFLICT_RESPONSE="${TMP_DIR}/conflict.json"
+
+  echo
+  echo "[e2e] Verify conflicting code/tag confirmation is rejected"
+  echo "[e2e] code=${RECOMMENDED_CODE}"
+  echo "[e2e] deliberately wrong tag=${WRONG_TAG}"
+
+  CONFLICT_CODE="$(
+    post_form \
+      "${CONFLICT_RESPONSE}" \
+      -F "action=confirm" \
+      -F "request_id=${REQUEST_ID}" \
+      -F "checklist_code=${RECOMMENDED_CODE}" \
+      -F "checklist_tag=${WRONG_TAG}"
+  )"
+
+  if [[ "${CONFLICT_CODE}" != "400" ]]; then
+    echo "[e2e] ERROR: conflicting code/tag must return HTTP 400"
+    echo "[e2e] actual HTTP: ${CONFLICT_CODE}"
+
+    if [[ -s "${CONFLICT_RESPONSE}" ]]; then
+      cat "${CONFLICT_RESPONSE}"
+      echo
+    fi
+
+    exit 1
+  fi
+
+  echo "[e2e] HTTP 400: OK"
+
+  # После ошибочного confirm job обязан всё ещё ждать подтверждения.
+  AFTER_CONFLICT_RESPONSE="${TMP_DIR}/after-conflict-status.json"
+
+  AFTER_CONFLICT_CODE="$(
+    post_form \
+      "${AFTER_CONFLICT_RESPONSE}" \
+      -F "action=status" \
+      -F "request_id=${REQUEST_ID}"
+  )"
+
+  require_success \
+    "${AFTER_CONFLICT_CODE}" \
+    "${AFTER_CONFLICT_RESPONSE}" \
+    "status after conflicting confirm"
+
+  AFTER_CONFLICT_STATUS="$(
+    json_field \
+      "${AFTER_CONFLICT_RESPONSE}" \
+      "status"
+  )"
+
+  if [[ "${AFTER_CONFLICT_STATUS}" != "awaiting_confirmation" ]]; then
+    echo "[e2e] ERROR: invalid confirm mutated job state"
+    pretty_json \
+      "${AFTER_CONFLICT_RESPONSE}"
+    exit 1
+  fi
+
+  echo "[e2e] Job still awaits confirmation: OK"
+
+  # --------------------------------------------------------------------
+  # CORRECT CONFIRM BY PUBLIC TAG
+  # --------------------------------------------------------------------
+
+  CONFIRM_RESPONSE="${TMP_DIR}/confirm-tag.json"
+
+  echo
+  echo "[e2e] Correct confirmation by public tag=${RECOMMENDED_TAG}"
+
+  CONFIRM_CODE="$(
+    post_form \
+      "${CONFIRM_RESPONSE}" \
+      -F "action=confirm" \
+      -F "request_id=${REQUEST_ID}" \
+      -F "checklist_tag=${RECOMMENDED_TAG}"
+  )"
+
+  require_success \
+    "${CONFIRM_CODE}" \
     "${CONFIRM_RESPONSE}" \
-    -F "action=confirm" \
-    -F "request_id=${REQUEST_ID}" \
-    -F "checklist_code=${CHECKLIST_CODE}"
-)"
+    "confirm by tag"
 
-require_success \
-  "${CONFIRM_CODE}" \
-  "${CONFIRM_RESPONSE}" \
-  "confirm"
+  pretty_json \
+    "${CONFIRM_RESPONSE}"
 
-pretty_json \
-  "${CONFIRM_RESPONSE}"
+  CONFIRMED_CODE="$(
+    json_field \
+      "${CONFIRM_RESPONSE}" \
+      "checklist_code"
+  )"
 
-# ----------------------------------------------------------------------
-# STATUS
-# ----------------------------------------------------------------------
+  CONFIRMED_TAG="$(
+    json_field \
+      "${CONFIRM_RESPONSE}" \
+      "checklist_tag"
+  )"
+
+  if [[ "${CONFIRMED_CODE}" != "${RECOMMENDED_CODE}" ]]; then
+    echo "[e2e] ERROR: confirmation returned wrong code"
+    exit 1
+  fi
+
+  if [[ "${CONFIRMED_TAG}" != "${RECOMMENDED_TAG}" ]]; then
+    echo "[e2e] ERROR: confirmation returned wrong tag"
+    exit 1
+  fi
+
+  # --------------------------------------------------------------------
+  # IDEMPOTENT CONFIRM BY INTERNAL CODE
+  # --------------------------------------------------------------------
+
+  REPEAT_CONFIRM_RESPONSE="${TMP_DIR}/confirm-code-repeat.json"
+
+  echo
+  echo "[e2e] Repeat confirmation by internal code"
+  echo "[e2e] This must not create a duplicate logical job"
+
+  REPEAT_CONFIRM_CODE="$(
+    post_form \
+      "${REPEAT_CONFIRM_RESPONSE}" \
+      -F "action=confirm" \
+      -F "request_id=${REQUEST_ID}" \
+      -F "checklist_code=${RECOMMENDED_CODE}"
+  )"
+
+  require_success \
+    "${REPEAT_CONFIRM_CODE}" \
+    "${REPEAT_CONFIRM_RESPONSE}" \
+    "repeated confirm by code"
+
+  pretty_json \
+    "${REPEAT_CONFIRM_RESPONSE}"
+
+  REPEAT_STATUS="$(
+    json_field \
+      "${REPEAT_CONFIRM_RESPONSE}" \
+      "status"
+  )"
+
+  case "${REPEAT_STATUS}" in
+    queued|processing|completed)
+      echo "[e2e] Idempotent repeated confirmation accepted: OK"
+      ;;
+    *)
+      echo "[e2e] ERROR: unexpected repeat-confirm status: ${REPEAT_STATUS}"
+      exit 1
+      ;;
+  esac
+fi
+
+# ======================================================================
+# STATUS POLLING
+# ======================================================================
 
 echo
 echo "[e2e] Waiting for worker"
@@ -319,7 +743,13 @@ while true; do
       "progress_percent"
   )"
 
-  echo "[e2e] status=${JOB_STATUS} progress=${PROGRESS}%"
+  STATUS_TAG="$(
+    json_field \
+      "${STATUS_RESPONSE}" \
+      "checklist_tag"
+  )"
+
+  echo "[e2e] status=${JOB_STATUS} progress=${PROGRESS}% tag=${STATUS_TAG}"
 
   case "${JOB_STATUS}" in
     completed)
@@ -343,7 +773,12 @@ while true; do
       exit 1
       ;;
 
-    awaiting_confirmation|queued|processing)
+    queued|processing)
+      ;;
+
+    awaiting_confirmation)
+      echo "[e2e] ERROR: job unexpectedly returned to confirmation state"
+      exit 1
       ;;
 
     *)
@@ -371,9 +806,35 @@ while true; do
   sleep "${POLL_SECONDS}"
 done
 
-# ----------------------------------------------------------------------
+# ======================================================================
+# PRIVACY BEFORE RESULT DELIVERY
+# ======================================================================
+
+echo
+echo "[e2e] Verify completed backend state before delivery"
+
+if docker compose exec -T api \
+  sh -lc \
+  "test ! -e '/data/jobs/${REQUEST_ID}/input.pdf' \
+   && test ! -e '/data/jobs/${REQUEST_ID}/source_filename.txt' \
+   && test -f '/data/jobs/${REQUEST_ID}/result.json'"
+then
+  echo "[e2e] input.pdf deleted: OK"
+  echo "[e2e] source_filename.txt deleted: OK"
+  echo "[e2e] temporary result.json exists: OK"
+else
+  echo "[e2e] ERROR: unexpected completed-job filesystem state"
+
+  docker compose exec -T api \
+    sh -lc \
+    "find '/data/jobs/${REQUEST_ID}' -maxdepth 2 -ls 2>/dev/null || true"
+
+  exit 1
+fi
+
+# ======================================================================
 # RESULT
-# ----------------------------------------------------------------------
+# ======================================================================
 
 PDF_BASENAME="$(
   basename \
@@ -382,8 +843,7 @@ PDF_BASENAME="$(
 
 PDF_STEM="${PDF_BASENAME%.*}"
 
-RESULT_FILE="${ARTIFACT_DIR}/${PDF_STEM}-${REQUEST_ID}.pdf"
-
+RESULT_FILE="${ARTIFACT_DIR}/${PDF_STEM}-${REQUEST_ID}.json"
 RESULT_HEADERS="${TMP_DIR}/result.headers"
 
 echo
@@ -415,32 +875,353 @@ fi
 
 if ! grep \
   -qi \
-  '^content-type: application/pdf' \
+  '^content-type: application/json' \
   "${RESULT_HEADERS}"
 then
-  echo "[e2e] ERROR: response content-type is not application/pdf"
+  echo "[e2e] ERROR: result content-type is not application/json"
+
   cat "${RESULT_HEADERS}"
+
   exit 1
 fi
 
-if [[ "$(
-  head -c 5 \
-    "${RESULT_FILE}"
-)" != "%PDF-" ]]; then
-  echo "[e2e] ERROR: downloaded result has no PDF signature"
-  exit 1
-fi
+# ======================================================================
+# RESULT JSON CONTRACT
+# ======================================================================
 
-echo "[e2e] Result downloaded:"
+echo
+echo "[e2e] Validate JSON contract"
+
+python3 - \
+  "${RESULT_FILE}" \
+  "${REQUEST_ID}" \
+  "${CHECKLIST_CODE}" \
+  "${CHECKLIST_TAG_CANONICAL}" \
+  "${PDF_BASENAME}" <<'PY'
+import json
+import sys
+from datetime import datetime
+
+(
+    result_path,
+    expected_request_id,
+    expected_code,
+    expected_tag,
+    expected_filename,
+) = sys.argv[1:]
+
+with open(
+    result_path,
+    "r",
+    encoding="utf-8",
+) as stream:
+    payload = json.load(
+        stream
+    )
+
+if not isinstance(
+    payload,
+    dict,
+):
+    raise SystemExit(
+        "result root must be an object"
+    )
+
+metadata = payload.get(
+    "metadata"
+)
+
+questions = payload.get(
+    "questions"
+)
+
+if not isinstance(
+    metadata,
+    dict,
+):
+    raise SystemExit(
+        "metadata must be an object"
+    )
+
+if not isinstance(
+    questions,
+    list,
+):
+    raise SystemExit(
+        "questions must be an array"
+    )
+
+required_metadata = {
+    "request_id",
+    "checklist_type",
+    "checklist_tag",
+    "checklist_code",
+    "source_filename",
+    "processing_seconds",
+    "search_seconds",
+    "completed_at",
+    "question_count",
+}
+
+missing_metadata = (
+    required_metadata
+    - set(
+        metadata
+    )
+)
+
+if missing_metadata:
+    raise SystemExit(
+        "missing metadata fields: "
+        + ", ".join(
+            sorted(
+                missing_metadata
+            )
+        )
+    )
+
+if metadata["request_id"] != expected_request_id:
+    raise SystemExit(
+        "request_id mismatch"
+    )
+
+if metadata["checklist_code"] != expected_code:
+    raise SystemExit(
+        "checklist_code mismatch: "
+        f'{metadata["checklist_code"]!r}'
+    )
+
+if metadata["checklist_tag"] != expected_tag:
+    raise SystemExit(
+        "checklist_tag mismatch: "
+        f'{metadata["checklist_tag"]!r}'
+    )
+
+if metadata["source_filename"] != expected_filename:
+    raise SystemExit(
+        "source_filename mismatch: "
+        f'{metadata["source_filename"]!r} '
+        f"!= {expected_filename!r}"
+    )
+
+if not isinstance(
+    metadata["checklist_type"],
+    str,
+) or not metadata[
+    "checklist_type"
+].strip():
+    raise SystemExit(
+        "checklist_type must be non-empty"
+    )
+
+for field in (
+    "processing_seconds",
+    "search_seconds",
+):
+    value = metadata[
+        field
+    ]
+
+    if not isinstance(
+        value,
+        (
+            int,
+            float,
+        ),
+    ):
+        raise SystemExit(
+            f"{field} must be numeric"
+        )
+
+    if value < 0:
+        raise SystemExit(
+            f"{field} cannot be negative"
+        )
+
+if (
+    metadata["search_seconds"]
+    > metadata["processing_seconds"] + 0.01
+):
+    raise SystemExit(
+        "search_seconds cannot exceed processing_seconds"
+    )
+
+completed_at = (
+    str(
+        metadata[
+            "completed_at"
+        ]
+    )
+    .replace(
+        "Z",
+        "+00:00",
+    )
+)
+
+datetime.fromisoformat(
+    completed_at
+)
+
+question_count = metadata[
+    "question_count"
+]
+
+if not isinstance(
+    question_count,
+    int,
+) or question_count <= 0:
+    raise SystemExit(
+        "question_count must be a positive integer"
+    )
+
+if len(
+    questions
+) != question_count:
+    raise SystemExit(
+        "question_count does not match questions length"
+    )
+
+filled = 0
+
+for index, item in enumerate(
+    questions,
+    start=1,
+):
+    if not isinstance(
+        item,
+        dict,
+    ):
+        raise SystemExit(
+            f"question #{index} must be an object"
+        )
+
+    number = item.get(
+        "number"
+    )
+
+    question = item.get(
+        "question"
+    )
+
+    answer = item.get(
+        "answer"
+    )
+
+    if not isinstance(
+        number,
+        str,
+    ) or not number.strip():
+        raise SystemExit(
+            f"question #{index}: invalid number"
+        )
+
+    if not isinstance(
+        question,
+        str,
+    ) or not question.strip():
+        raise SystemExit(
+            f"question #{index}: invalid question"
+        )
+
+    if not isinstance(
+        answer,
+        str,
+    ):
+        raise SystemExit(
+            f"question #{index}: answer must be a string"
+        )
+
+    if answer.strip():
+        filled += 1
+
+print(
+    "[e2e] JSON schema: OK"
+)
+
+print(
+    "[e2e] checklist:",
+    metadata["checklist_tag"],
+    f'({metadata["checklist_code"]})',
+)
+
+print(
+    "[e2e] checklist type:",
+    metadata["checklist_type"],
+)
+
+print(
+    "[e2e] source filename:",
+    metadata["source_filename"],
+)
+
+print(
+    "[e2e] processing_seconds:",
+    metadata["processing_seconds"],
+)
+
+print(
+    "[e2e] search_seconds:",
+    metadata["search_seconds"],
+)
+
+print(
+    "[e2e] questions:",
+    question_count,
+)
+
+print(
+    "[e2e] filled answers:",
+    filled,
+)
+
+print(
+    "[e2e] blank answers:",
+    question_count - filled,
+)
+
+print()
+print(
+    "[e2e] First non-empty answers:"
+)
+
+shown = 0
+
+for item in questions:
+    if not item["answer"].strip():
+        continue
+
+    print(
+        f'  {item["number"]}. '
+        f'{item["question"]}'
+    )
+
+    print(
+        "     ->",
+        item["answer"],
+    )
+
+    shown += 1
+
+    if shown >= 12:
+        break
+
+if shown == 0:
+    print(
+        "  <no filled answers>"
+    )
+PY
+
+echo
+echo "[e2e] Client-side JSON copy:"
 echo "${RESULT_FILE}"
 
 echo "[e2e] Result size:"
 du -h \
   "${RESULT_FILE}"
 
-# ----------------------------------------------------------------------
+# ======================================================================
 # ONE-TIME DELIVERY
-# ----------------------------------------------------------------------
+# ======================================================================
 
 SECOND_RESULT_RESPONSE="${TMP_DIR}/second-result.json"
 
@@ -466,11 +1247,11 @@ if [[ "${SECOND_RESULT_CODE}" != "404" ]]; then
   exit 1
 fi
 
-echo "[e2e] Second result call returned 404: OK"
+echo "[e2e] Second result returned HTTP 404: OK"
 
-# ----------------------------------------------------------------------
-# BACKEND FILESYSTEM
-# ----------------------------------------------------------------------
+# ======================================================================
+# BACKEND FILESYSTEM AFTER DELIVERY
+# ======================================================================
 
 echo
 echo "[e2e] Verify backend job directory was removed"
@@ -490,9 +1271,9 @@ else
   exit 1
 fi
 
-# ----------------------------------------------------------------------
-# BACKEND METADATA
-# ----------------------------------------------------------------------
+# ======================================================================
+# BACKEND METADATA AFTER DELIVERY
+# ======================================================================
 
 echo
 echo "[e2e] Verify SQLite metadata was removed"
@@ -521,6 +1302,7 @@ if state is not None:
     print(
         state
     )
+
     raise SystemExit(
         1
     )
@@ -532,72 +1314,12 @@ else
   exit 1
 fi
 
-# ----------------------------------------------------------------------
-# CLIENT-SIDE REPORT PREVIEW
-# ----------------------------------------------------------------------
-
-echo
-echo "[e2e] PDF text preview"
-
-RESULT_DIRECTORY="$(
-  cd "$(
-    dirname \
-      "${RESULT_FILE}"
-  )"
-  pwd
-)"
-
-RESULT_NAME="$(
-  basename \
-    "${RESULT_FILE}"
-)"
-
-docker compose run \
-  --rm \
-  -T \
-  --no-deps \
-  -v "${RESULT_DIRECTORY}:/inspect:ro" \
-  api \
-  python - \
-  "${RESULT_NAME}" <<'PY'
-import sys
-
-import pymupdf
-
-path = (
-    "/inspect/"
-    + sys.argv[1]
-)
-
-document = pymupdf.open(
-    path
-)
-
-text = "\n".join(
-    page.get_text()
-    for page in document
-)
-
-print(
-    f"[e2e] pages={document.page_count}"
-)
-
-print(
-    "[e2e] first 5000 extracted characters:"
-)
-
-print(
-    text[:5000]
-    if text.strip()
-    else "<PDF contains no extractable text>"
-)
-PY
-
 echo
 echo "============================================================"
-echo "[e2e] REAL E2E PASSED"
+echo "[e2e] REAL JSON E2E PASSED"
+echo "[e2e] mode: ${MODE}"
 echo "[e2e] request_id: ${REQUEST_ID}"
-echo "[e2e] checklist: ${CHECKLIST_CODE}"
-echo "[e2e] report: ${RESULT_FILE}"
+echo "[e2e] checklist: ${CHECKLIST_TAG_CANONICAL} (${CHECKLIST_CODE})"
+echo "[e2e] client result: ${RESULT_FILE}"
 echo "[e2e] backend input/result/metadata: deleted"
 echo "============================================================"
